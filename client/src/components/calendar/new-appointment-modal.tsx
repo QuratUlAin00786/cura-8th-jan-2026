@@ -1,8 +1,8 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Calendar, User, Mail, Phone } from "lucide-react";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 import { queryClient } from "@/lib/queryClient";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
@@ -105,11 +105,27 @@ export function NewAppointmentModal({ isOpen, onClose, onAppointmentCreated }: N
       type: "consultation",
       department: "Cardiology",
       location: "",
-      isVirtual: false
+      isVirtual: false,
+      appointmentType: "consultation",
+      providerRole: "",
+      treatmentId: "",
+      consultationId: ""
     }
   });
 
   const formData = form.watch();
+
+  useEffect(() => {
+    if (formData.appointmentType === "treatment") {
+      if (form.getValues("consultationId")) {
+        form.setValue("consultationId", "");
+      }
+    } else {
+      if (form.getValues("treatmentId")) {
+        form.setValue("treatmentId", "");
+      }
+    }
+  }, [formData.appointmentType, form]);
 
   const fetchPatients = async () => {
     try {
@@ -215,6 +231,74 @@ export function NewAppointmentModal({ isOpen, onClose, onAppointmentCreated }: N
       setAllProviders([]);
     }
   };
+
+  const { data: treatmentsData = [] } = useQuery({
+    queryKey: ["/api/pricing/treatments"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/pricing/treatments");
+      if (!response.ok) {
+        throw new Error("Failed to fetch treatments");
+      }
+      return await response.json();
+    },
+    enabled: !!user,
+  });
+
+  const { data: consultationServicesData = [] } = useQuery({
+    queryKey: ["/api/pricing/doctors-fees"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/pricing/doctors-fees");
+      if (!response.ok) {
+        throw new Error("Failed to fetch consultation services");
+      }
+      return await response.json();
+    },
+    enabled: !!user,
+  });
+
+  const providerRoles = useMemo(() => {
+    const rolesSet = new Set<string>();
+    allProviders.forEach((provider) => {
+      if (provider.role) {
+        rolesSet.add(provider.role.toLowerCase());
+      }
+    });
+    return Array.from(rolesSet);
+  }, [allProviders]);
+
+  const filteredProviders = useMemo(() => {
+    const base = formData.providerRole ? availableProviders : availableProviders;
+    if (!formData.providerRole) {
+      return availableProviders;
+    }
+    return availableProviders.filter(
+      (provider) =>
+        provider.role?.toLowerCase() === formData.providerRole.toLowerCase(),
+    );
+  }, [availableProviders, formData.providerRole]);
+  const { data: treatmentsData = [] } = useQuery({
+    queryKey: ["/api/pricing/treatments"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/pricing/treatments");
+      if (!response.ok) {
+        throw new Error("Failed to fetch treatments");
+      }
+      return await response.json();
+    },
+    enabled: !!user,
+  });
+
+  const { data: consultationServicesData = [] } = useQuery({
+    queryKey: ["/api/pricing/doctors-fees"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/pricing/doctors-fees");
+      if (!response.ok) {
+        throw new Error("Failed to fetch consultation services");
+      }
+      return await response.json();
+    },
+    enabled: !!user,
+  });
 
   // Fetch appointments for selected date and doctor to check time slot availability
   const fetchAppointmentsForDate = async (date: string, doctorId: string) => {
@@ -533,7 +617,23 @@ export function NewAppointmentModal({ isOpen, onClose, onAppointmentCreated }: N
     // The patientId field now contains the database ID (as string)
     const patientDatabaseId = parseInt(data.patientId);
     
-    const appointmentData = {
+    if (data.appointmentType === "treatment" && !data.treatmentId) {
+      form.setError("treatmentId", {
+        type: "required",
+        message: "Please select a treatment",
+      });
+      return;
+    }
+
+    if (data.appointmentType === "consultation" && !data.consultationId) {
+      form.setError("consultationId", {
+        type: "required",
+        message: "Please select a consultation service",
+      });
+      return;
+    }
+
+    const appointmentData: any = {
       patientId: patientDatabaseId, // Use numeric database ID directly
       providerId: parseInt(data.providerId),
       title: data.title || `${data.type} appointment`,
@@ -545,6 +645,16 @@ export function NewAppointmentModal({ isOpen, onClose, onAppointmentCreated }: N
       location: data.isVirtual ? "Virtual" : (data.location || `${data.department || 'General'} Department`),
       isVirtual: data.isVirtual
     };
+
+    appointmentData.appointmentType = data.appointmentType;
+    appointmentData.providerRole = data.providerRole || null;
+    if (data.appointmentType === "treatment") {
+      appointmentData.treatmentId = data.treatmentId ? parseInt(data.treatmentId) : null;
+      appointmentData.consultationId = null;
+    } else {
+      appointmentData.consultationId = data.consultationId ? parseInt(data.consultationId) : null;
+      appointmentData.treatmentId = null;
+    }
     
     console.log("Appointment data being sent:", appointmentData);
 
@@ -666,7 +776,7 @@ export function NewAppointmentModal({ isOpen, onClose, onAppointmentCreated }: N
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        {availableProviders.map((provider: any) => (
+                        {filteredProviders.map((provider: any) => (
                           <SelectItem key={provider.id} value={provider.id.toString()}>
                             Dr. {provider.firstName} {provider.lastName}
                             {provider.department && ` - ${provider.department}`}
@@ -685,6 +795,125 @@ export function NewAppointmentModal({ isOpen, onClose, onAppointmentCreated }: N
                   </FormItem>
                 )}
               />
+
+              <FormField
+                control={form.control}
+                name="providerRole"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Provider Role</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value || ""} data-testid="select-provider-role">
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select role (optional)" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {providerRoles.length ? (
+                          providerRoles.map((role) => (
+                            <SelectItem key={`role-${role}`} value={role}>
+                              {role.charAt(0).toUpperCase() + role.slice(1)}
+                            </SelectItem>
+                          ))
+                        ) : (
+                          <SelectItem value="" disabled>
+                            No provider roles available
+                          </SelectItem>
+                        )}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <FormField
+                control={form.control}
+                name="appointmentType"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="required">Appointment Type</FormLabel>
+                    <Select onValueChange={field.onChange} value={field.value} data-testid="select-appointment-type">
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select appointment type..." />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="consultation">Consultation</SelectItem>
+                        <SelectItem value="treatment">Treatment</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              {formData.appointmentType === "treatment" && (
+                <FormField
+                  control={form.control}
+                  name="treatmentId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="required">Select Treatment</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value} data-testid="select-treatment">
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select a treatment..." />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {treatmentsData.map((treatment: any) => (
+                            <SelectItem key={`treatment-${treatment.id}`} value={treatment.id.toString()}>
+                              <div className="flex justify-between">
+                                <span>{treatment.name}</span>
+                                <span className="text-xs text-gray-500">
+                                  {treatment.currency || "GBP"} {treatment.basePrice}
+                                </span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+
+              {formData.appointmentType === "consultation" && (
+                <FormField
+                  control={form.control}
+                  name="consultationId"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel className="required">Select Consultation</FormLabel>
+                      <Select onValueChange={field.onChange} value={field.value} data-testid="select-consultation">
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select a consultation..." />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {consultationServicesData.map((service: any) => (
+                            <SelectItem key={`consultation-${service.id}`} value={service.id.toString()}>
+                              <div className="flex justify-between">
+                                <span>{service.service_name}</span>
+                                <span className="text-xs text-gray-500">
+                                  {service.currency || "GBP"} {service.price}
+                                </span>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
             </div>
 
             <FormField

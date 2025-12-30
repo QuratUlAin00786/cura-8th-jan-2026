@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { format } from "date-fns";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
 import jsPDF from "jspdf";
@@ -33,8 +34,10 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { useRolePermissions } from "@/hooks/use-role-permissions";
@@ -42,6 +45,13 @@ import { Toaster } from "@/components/ui/toaster";
 import { isDoctorLike } from "@/lib/role-utils";
 import { Header } from "@/components/layout/header";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import {
+  FormBuilder,
+  FormBuilderLoadPayload,
+  SectionInput,
+  FieldType,
+} from "@/components/forms/FormBuilder";
+import { FormFill } from "@/components/forms/FormFill";
 import {
   Bold,
   Italic,
@@ -75,7 +85,65 @@ import {
   Edit,
   AlertCircle,
   CheckCircle,
+  RefreshCw,
+  ChevronsUpDown,
 } from "lucide-react";
+
+interface FormFieldSummary {
+  id: number;
+  label: string;
+  fieldType: string;
+  required: boolean;
+  placeholder?: string;
+  fieldOptions: string[];
+  order: number;
+}
+
+interface FormSectionSummary {
+  id: number;
+  title: string;
+  order: number;
+  metadata?: Record<string, any>;
+  fields: FormFieldSummary[];
+}
+
+interface FormSummary {
+  id: number;
+  title: string;
+  description?: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  sections: FormSectionSummary[];
+}
+
+interface FormResponseAnswer {
+  fieldId: number;
+  label: string;
+  value: any;
+}
+
+interface FormResponseRecord {
+  responseId: number;
+  shareId: number;
+  submittedAt: string | null;
+  patient: {
+    id: number;
+    firstName?: string | null;
+    lastName?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    nhsNumber?: string | null;
+  } | null;
+  answers: FormResponseAnswer[];
+}
+
+interface FormResponsesPayload {
+  formId: number;
+  formTitle: string;
+  fields: Array<{ id: number; label: string }>;
+  responses: FormResponseRecord[];
+}
 
 // View Clinic Info Component
 function ViewClinicInfo({ user, onLoadHeader, onLoadFooter }: { user: any; onLoadHeader: (header: any, footer: any) => void; onLoadFooter: (footer: any) => void }) {
@@ -742,6 +810,7 @@ function ViewClinicInfo({ user, onLoadHeader, onLoadFooter }: { user: any; onLoa
 }
 
 export default function Forms() {
+  const { user } = useAuth();
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [documentContent, setDocumentContent] = useState("");
@@ -778,6 +847,37 @@ export default function Forms() {
   const [showEmptyContentDialog, setShowEmptyContentDialog] = useState(false);
   const [showDocumentPreviewDialog, setShowDocumentPreviewDialog] = useState(false);
   const [showShareDialog, setShowShareDialog] = useState(false);
+  const [showFormShareDialog, setShowFormShareDialog] = useState(false);
+  const [showShareLinksDialog, setShowShareLinksDialog] = useState(false);
+  const [formLoadPayload, setFormLoadPayload] = useState<FormBuilderLoadPayload | undefined>(undefined);
+  type FormsTab = "dynamic" | "saved" | "filled" | "forms" | "editor";
+  const userIsPatient = Boolean(user && user.role === "patient");
+  const initialTab: FormsTab = userIsPatient ? "filled" : "dynamic";
+  const [activeFormsTab, setActiveFormsTab] = useState<FormsTab>(initialTab);
+  useEffect(() => {
+    if (userIsPatient) {
+      setActiveFormsTab("filled");
+    }
+  }, [userIsPatient]);
+  const [selectedFormForShare, setSelectedFormForShare] = useState<FormSummary | null>(null);
+  const [selectedFormPatientId, setSelectedFormPatientId] = useState("");
+  const [latestLinks, setLatestLinks] = useState<Record<number, string>>({});
+  const [currentLinkForm, setCurrentLinkForm] = useState<FormSummary | null>(null);
+  const [responseDialogOpen, setResponseDialogOpen] = useState(false);
+  const [selectedFormForResponses, setSelectedFormForResponses] = useState<FormSummary | null>(null);
+  const [formResponsesData, setFormResponsesData] = useState<FormResponsesPayload | null>(null);
+  const [formResponsesLoading, setFormResponsesLoading] = useState(false);
+  const [filledViewMode, setFilledViewMode] = useState<"grid" | "list">("grid");
+  const openShareLinksDialog = (form: FormSummary) => {
+    setCurrentLinkForm(form);
+    setShowShareLinksDialog(true);
+  };
+  const closeShareLinksDialog = () => {
+    setShowShareLinksDialog(false);
+    setCurrentLinkForm(null);
+  };
+  const [emailPreview, setEmailPreview] = useState<{ subject: string; html: string; text: string; link: string } | null>(null);
+  const [previewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [showTemplateSaveSuccessModal, setShowTemplateSaveSuccessModal] = useState(false);
   const [savedTemplateName, setSavedTemplateName] = useState("");
   const [selectedDoctorId, setSelectedDoctorId] = useState("");
@@ -870,9 +970,6 @@ export default function Forms() {
     twitter: "",
     linkedin: "",
   });
-
-  // Get current user
-  const { user } = useAuth();
 
   // Patient letter templates data
   const patientTemplates = {
@@ -2045,13 +2142,35 @@ Coverage Details: [Insurance Coverage]`;
     },
     enabled: true,
   });
+  const creatorsById = useMemo(() => {
+    const map = new Map<number, { name: string; email?: string }>();
+    users.forEach((user) => {
+      map.set(user.id, {
+        name: `${user.firstName} ${user.lastName}`.trim() || user.email || "Unknown user",
+        email: user.email,
+      });
+    });
+    return map;
+  }, [users]);
+  const userIsDoctor = Boolean(user && isDoctorLike(user.role));
+  const currentUserId = user?.id;
+  const resolveFormCreatorId = (form: FormSummary) => {
+    const id =
+      form.createdBy ??
+      form.metadata?.createdBy ??
+      form.metadata?.created_by ??
+      form.metadata?.userId ??
+      null;
+    const numeric = Number(id);
+    return Number.isNaN(numeric) ? null : numeric;
+  };
 
   // Fetch patients from patients table
   const { data: patientsFromTable = [], isLoading: patientsLoading } = useQuery<Patient[]>({
     queryKey: ["/api/patients"],
     queryFn: async () => {
       const response = await fetch("/api/patients", {
-        headers: { 
+        headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${localStorage.getItem("auth_token")}`,
         },
@@ -2060,10 +2179,593 @@ Coverage Details: [Insurance Coverage]`;
       return response.json();
     },
   });
+  const currentPatientRecord = useMemo(
+    () => patientsFromTable.find((patient) => patient.userId === user?.id),
+    [patientsFromTable, user?.id],
+  );
+  const currentPatientId = currentPatientRecord?.id ?? null;
+
+  const { data: savedForms = [], isLoading: formsLoading } = useQuery<FormSummary[]>({
+    queryKey: ["/api/forms"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/forms");
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.error || "Failed to load forms");
+      }
+      return response.json();
+    },
+  });
+  const savedFormsToDisplay = useMemo(() => {
+    if (!userIsDoctor || !currentUserId) return savedForms;
+    return savedForms.filter((form) => resolveFormCreatorId(form) === currentUserId);
+  }, [savedForms, userIsDoctor, currentUserId]);
+
+  const closeFormShareDialog = () => {
+    setShowFormShareDialog(false);
+    setSelectedFormForShare(null);
+    setSelectedFormPatientId("");
+  };
+
+  const openFormShareDialog = (form: FormSummary) => {
+    setSelectedFormForShare(form);
+    setSelectedFormPatientId("");
+    setShowFormShareDialog(true);
+  };
+
+  const loadFormIntoBuilder = (form: FormSummary) => {
+    const normalizedSections: SectionInput[] = form.sections.length
+      ? form.sections.map((section) => ({
+          id: `section_${form.id}_${section.id}`,
+          title: section.title || `Section ${section.order + 1}`,
+          fields: section.fields.map((field) => ({
+            id: `field_${section.id}_${field.id}`,
+            label: field.label || `Field ${field.id}`,
+            type: field.fieldType as FieldType,
+            required: field.required,
+            placeholder: field.placeholder ?? "",
+            options: field.fieldOptions ?? [],
+          })),
+        }))
+      : [{ id: `section_${form.id}_0`, title: "Section 1", fields: [] }];
+
+    setFormLoadPayload({
+      key: Date.now(),
+      title: form.title,
+      description: form.description ?? "",
+      sections: normalizedSections,
+    });
+
+    toast({
+      title: "Form loaded",
+      description: `“${form.title}” is now editable in the builder.`,
+    });
+  };
+
+  const handleViewFormResponses = async (form: FormSummary) => {
+    setSelectedFormForResponses(form);
+    setFormResponsesData(null);
+    setResponseDialogOpen(true);
+    setFormResponsesLoading(true);
+    try {
+      const response = await apiRequest("GET", `/api/forms/${form.id}/responses`);
+    const rawText = await response.text();
+    if (!rawText) {
+      throw new Error("Received empty response from server");
+    }
+    const trimmed = rawText.trim();
+    if (trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<html")) {
+      toast({
+        title: "Unable to load responses",
+        description:
+          "Server returned HTML instead of JSON. Please ensure the API is reachable and the form exists.",
+        variant: "destructive",
+      });
+      setResponseDialogOpen(false);
+      return;
+    }
+    let parsed: FormResponsesPayload;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch (parseError) {
+      throw new Error(`Failed to parse responses: ${rawText.slice(0, 200)}`);
+    }
+    setFormResponsesData(parsed);
+    } catch (error) {
+      toast({
+        title: "Unable to load responses",
+        description: error instanceof Error ? error.message : "Check the console for details",
+        variant: "destructive",
+      });
+      setResponseDialogOpen(false);
+    } finally {
+      setFormResponsesLoading(false);
+    }
+  };
+
+  const downloadResponsesCsv = () => {
+    if (!formResponsesData) return;
+    const headers = [
+      "Patient Name",
+      "Email",
+      "Phone",
+      "NHS Number",
+      "Submitted at",
+      ...formResponsesData.fields.map((field) => field.label),
+    ];
+    const rows = formResponsesData.responses.map((response) => {
+      const name = response.patient
+        ? `${response.patient.firstName ?? ""} ${response.patient.lastName ?? ""}`.trim()
+        : "Unknown patient";
+      const submitted = response.submittedAt
+        ? new Date(response.submittedAt).toLocaleString()
+        : "—";
+      const answerMap = new Map(response.answers.map((answer) => [answer.fieldId, answer.value]));
+      const answerValues = formResponsesData.fields.map((field) => {
+        const value = answerMap.get(field.id);
+        if (value === null || value === undefined) return "—";
+        if (typeof value === "object") return JSON.stringify(value);
+        return String(value);
+      });
+      return [
+        name,
+        response.patient?.email ?? "",
+        response.patient?.phone ?? "",
+        response.patient?.nhsNumber ?? "",
+        submitted,
+        ...answerValues,
+      ];
+    });
+
+    const csvLines = [
+      headers.map((h) => `"${h.replace(/"/g, '""')}"`).join(","),
+      ...rows.map((row) =>
+        row.map((cell) => `"${(cell ?? "").toString().replace(/"/g, '""')}"`).join(","),
+      ),
+    ];
+
+    const blob = new Blob([csvLines.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${formResponsesData.formTitle || "form"}-responses.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const shareFormMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedFormForShare) {
+        throw new Error("Select a form first");
+      }
+      const patientId = Number(selectedFormPatientId);
+      if (!patientId) {
+        throw new Error("Select a patient to share with");
+      }
+      const patient = patientsFromTable.find((patient) => patient.id === patientId);
+      if (!patient?.email) {
+        throw new Error("Patient must have an email address before sharing");
+      }
+
+      const response = await apiRequest("POST", `/api/forms/${selectedFormForShare.id}/share`, {
+        patientId,
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.error || "Failed to share form");
+      }
+      const body = await response.json();
+      return body;
+    },
+    onSuccess(data) {
+      setEmailPreview({
+        subject: data.emailPreview?.subject ?? "",
+        html: data.emailPreview?.html ?? "",
+        text: data.emailPreview?.text ?? "",
+        link: data.link,
+      });
+      setPreviewDialogOpen(true);
+      setLatestLinks((prev) => ({
+        ...prev,
+        [selectedFormForShare?.id ?? 0]: data.link,
+      }));
+      queryClient.invalidateQueries({ queryKey: ["/api/forms"] });
+      toast({
+        title: data.emailSent ? "Form shared" : "Link created",
+        description: data.emailSent
+          ? `The form link was emailed successfully.`
+          : `Link generated, but email delivery failed${data.emailError ? ` (${data.emailError})` : ""}—copy the link manually or resend.`,
+        variant: data.emailSent ? undefined : "destructive",
+      });
+      closeFormShareDialog();
+    },
+    onError(error) {
+      toast({
+        title: "Share failed",
+        description: error instanceof Error ? error.message : "Unable to share the form",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const previewEmailMutation = useMutation({
+    mutationFn: async () => {
+      if (!selectedFormForShare) {
+        throw new Error("Select a form first");
+      }
+      const patientId = Number(selectedFormPatientId);
+      if (!patientId) {
+        throw new Error("Select a patient to preview email for");
+      }
+
+      const response = await apiRequest("POST", `/api/forms/${selectedFormForShare.id}/share/preview`, {
+        patientId,
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.error || "Failed to preview email");
+      }
+      return response.json();
+    },
+    onSuccess(data) {
+      setEmailPreview({
+        subject: data.subject,
+        html: data.html,
+        text: data.text,
+        link: data.link,
+      });
+      setPreviewDialogOpen(true);
+    },
+    onError(error) {
+      toast({
+        title: "Preview failed",
+        description: error instanceof Error ? error.message : "Unable to preview email",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteFormMutation = useMutation({
+    mutationFn: async (formId: number) => {
+      const response = await apiRequest("DELETE", `/api/forms/${formId}`);
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.error || "Failed to delete form");
+      }
+      return formId;
+    },
+    onSuccess(formId) {
+      toast({
+        title: "Form deleted",
+        description: "The form has been removed from your workspace.",
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/forms"] });
+    },
+    onError(error) {
+      toast({
+        title: "Delete failed",
+        description: error instanceof Error ? error.message : "Unable to delete the form",
+        variant: "destructive",
+      });
+    },
+  });
 
   // Filter users to get only doctors and patients
   const doctors = users.filter((user) => isDoctorLike(user.role) && user.isActive);
   const patients = users.filter((user) => user.role === 'patient' && user.isActive);
+  const selectedPatient = useMemo(() => {
+    return patientsFromTable.find((patient) => String(patient.id) === selectedFormPatientId);
+  }, [patientsFromTable, selectedFormPatientId]);
+  const {
+    data: shareLinks = [],
+    refetch: refetchShareLinks,
+    isFetching: shareLinksLoading,
+  } = useQuery({
+    queryKey: ["formShareLinks", currentLinkForm?.id],
+    queryFn: async () => {
+      if (!currentLinkForm) return [];
+      const response = await apiRequest("GET", `/api/forms/${currentLinkForm.id}/shares`);
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.error || "Failed to fetch share links");
+      }
+      return response.json();
+    },
+    enabled: !!currentLinkForm && showShareLinksDialog,
+  });
+  const [resendingLogId, setResendingLogId] = useState<number | null>(null);
+
+  const {
+    data: filledForms = [],
+    isFetching: filledFormsLoading,
+  } = useQuery({
+    queryKey: ["filledForms"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/documents");
+      const documents = await response.json();
+      return documents.filter((doc: any) => doc.type === "medical_form");
+    },
+  });
+  const [filterFormName, setFilterFormName] = useState("");
+  const [filterPatientEmail, setFilterPatientEmail] = useState("");
+  const [filterPatientId, setFilterPatientId] = useState("");
+  const [filterDate, setFilterDate] = useState("");
+  const [filterFormId, setFilterFormId] = useState("");
+  const [showPatientEmailDropdown, setShowPatientEmailDropdown] = useState(false);
+  const [showPatientIdDropdown, setShowPatientIdDropdown] = useState(false);
+  const [activeFilledDropdown, setActiveFilledDropdown] = useState<"formName" | "formId" | null>(null);
+
+const formNames = useMemo(
+  () => Array.from(new Set(filledForms.map((doc: any) => doc.name || "").filter(Boolean))),
+  [filledForms],
+);
+  const patientEmailsFromTable = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          patientsFromTable
+            .map((patient: any) => patient.email || "")
+            .filter((value: string) => value),
+        ),
+      ),
+    [patientsFromTable],
+  );
+  const patientIdsFromTable = useMemo(
+    () =>
+      Array.from(
+        new Set(
+          patientsFromTable
+            .map((patient: any) => String(patient.id))
+            .filter((value) => value),
+        ),
+      ),
+    [patientsFromTable],
+  );
+const formIds = useMemo(
+  () =>
+    Array.from(
+      new Set(
+        filledForms
+          .map((doc: any) => doc.metadata?.formId)
+          .filter((value) => value !== undefined && value !== null)
+          .map((value) => String(value)),
+      ),
+    ),
+  [filledForms],
+);
+  const closeCommandMenu = () => {
+    setTimeout(() => {
+      const active = document.activeElement as HTMLElement | null;
+      active?.blur();
+    }, 0);
+  };
+  const closeAllFilledDropdowns = () => {
+    setActiveFilledDropdown(null);
+  };
+
+  const openDropdown = (type: "formName" | "patientEmail" | "patientId" | "formId") => {
+    closeAllFilledDropdowns();
+    if (type === "formName") {
+      setActiveFilledDropdown("formName");
+      setFilterFormId("");
+    } else if (type === "formId") {
+      setActiveFilledDropdown("formId");
+      setFilterFormName("");
+    } else {
+      if (type === "patientEmail") setShowPatientEmailDropdown(true);
+      if (type === "patientId") setShowPatientIdDropdown(true);
+    }
+  };
+  const closeDropdown = (type: "formName" | "patientEmail" | "patientId" | "formId") => {
+    setTimeout(() => {
+      if (type === "formName" || type === "formId") {
+        if (activeFilledDropdown === type) {
+          setActiveFilledDropdown(null);
+        }
+      }
+      if (type === "patientEmail") setShowPatientEmailDropdown(false);
+      if (type === "patientId") setShowPatientIdDropdown(false);
+    }, 150);
+  };
+  const resetFilters = () => {
+    setFilterFormName("");
+    setFilterPatientEmail("");
+    setFilterPatientId("");
+    setFilterDate("");
+    setFilterFormId("");
+  };
+  const handleCommandFocus = (key: string) => setActiveCommand(key);
+  const handleCommandBlur = (key: string) => {
+    setTimeout(() => {
+      setActiveCommand((current) => (current === key ? null : current));
+    }, 150);
+  };
+
+  const resolveFormCreator = (doc: any) => {
+    const creatorId =
+      doc.userId ??
+      doc.createdBy ??
+      doc.metadata?.createdBy ??
+      doc.metadata?.created_by ??
+      doc.metadata?.userId;
+    if (!creatorId) return null;
+    const normalizedId = Number(creatorId);
+    if (Number.isNaN(normalizedId)) return null;
+    const creator = creatorsById.get(normalizedId);
+    return creator ?? { name: `User #${normalizedId}` };
+  };
+
+  const filteredFilledForms = useMemo(() => {
+    return filledForms.filter((doc: any) => {
+      const name = String(doc.name || "").toLowerCase();
+      const metadata = doc.metadata || {};
+      const patientEmail = String(metadata.patientEmail || "").toLowerCase();
+      const patientId = metadata.patientId ? String(metadata.patientId) : "";
+      const formId = metadata.formId ? String(metadata.formId) : "";
+      const createdAt = doc.createdAt ? new Date(doc.createdAt).toISOString().split("T")[0] : "";
+
+      const matchesName = filterFormName
+        ? name.includes(filterFormName.trim().toLowerCase())
+        : true;
+      const matchesEmail = filterPatientEmail
+        ? patientEmail.includes(filterPatientEmail.trim().toLowerCase())
+        : true;
+      const matchesPatientId = filterPatientId
+        ? patientId === filterPatientId.trim()
+        : true;
+      const matchesDate = filterDate ? createdAt === filterDate : true;
+      const matchesFormId = filterFormId ? formId === filterFormId : true;
+
+      if (userIsDoctor && currentUserId) {
+        const docCreatorIdRaw =
+          doc.createdBy ??
+          doc.metadata?.createdBy ??
+          doc.metadata?.created_by ??
+          doc.metadata?.userId ??
+          doc.userId ??
+          null;
+        const docCreatorId = Number(docCreatorIdRaw);
+        if (Number.isNaN(docCreatorId) || docCreatorId !== currentUserId) {
+          return false;
+        }
+      }
+
+      if (userIsPatient && currentPatientId) {
+        const metadataPatientId =
+          doc.metadata?.patientId ??
+          doc.metadata?.patient?.id ??
+          doc.patientId ??
+          null;
+        const numericId = metadataPatientId ? Number(metadataPatientId) : null;
+        if (numericId !== currentPatientId) {
+          return false;
+        }
+      }
+      return matchesName && matchesEmail && matchesPatientId && matchesDate && matchesFormId;
+    });
+  }, [filledForms, filterFormName, filterPatientEmail, filterPatientId, filterDate, filterFormId]);
+
+  const filledFormCardContent = (doc: any) => {
+  const link = doc.metadata?.pdfPath ? `/${doc.metadata.pdfPath}` : null;
+    const creatorInfo = resolveFormCreator(doc);
+  return (
+    <>
+      <div className="space-y-1">
+        <p className="text-sm font-semibold text-gray-800 dark:text-gray-100">
+          {doc.name || "Form response"}
+        </p>
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          Patient: {doc.metadata?.patientName || "Unknown patient"}
+        </p>
+        {(doc.metadata?.patientEmail || doc.patientEmail || doc.metadata?.patient?.email) && (
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Email: {doc.metadata?.patientEmail || doc.patientEmail || doc.metadata?.patient?.email}
+          </p>
+        )}
+        <p className="text-xs text-gray-500 dark:text-gray-400">
+          Form ID: {doc.metadata?.formId ?? "—"} • Response #{doc.metadata?.responseId ?? "—"}
+        </p>
+        <p className="text-[11px] text-muted-foreground">
+          Created {new Date(doc.createdAt).toLocaleString()}
+        </p>
+        {creatorInfo && (
+          <p className="text-[11px] text-muted-foreground">
+            Created by {creatorInfo.name}
+            {creatorInfo.email ? ` (${creatorInfo.email})` : ""}
+          </p>
+        )}
+      </div>
+      <div className="flex items-center gap-2 flex-wrap">
+        {link ? (
+          <Button size="sm" variant="outline" asChild>
+            <a href={link} target="_blank" rel="noreferrer">
+              View Form
+            </a>
+          </Button>
+        ) : (
+          <span className="text-[11px] text-rose-500">PDF missing</span>
+        )}
+        {doc.metadata?.headerName && (
+          <span className="text-[11px] text-muted-foreground">
+            Clinic: {doc.metadata.headerName}
+          </span>
+        )}
+      </div>
+    </>
+  );
+};
+
+  const loadFilledForm = (doc: any) => {
+    const link = doc.metadata?.pdfPath ? `/${doc.metadata.pdfPath}` : null;
+    if (link) {
+      window.open(link, "_blank");
+    } else {
+      toast({
+        title: "Missing PDF",
+        description: "This filled form does not have a PDF available.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const downloadFilledForm = (doc: any) => {
+    const link = doc.metadata?.pdfPath ? `/${doc.metadata.pdfPath}` : null;
+    if (link) {
+      const anchor = document.createElement("a");
+      anchor.href = link;
+      anchor.download = doc.name || `form-${doc.id}.pdf`;
+      anchor.target = "_blank";
+      anchor.click();
+    } else {
+      toast({
+        title: "Download unavailable",
+        description: "Unable to download because the PDF is missing.",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const resendShareEmailMutation = useMutation({
+    mutationFn: async (logId: number) => {
+      const response = await apiRequest("POST", `/api/forms/share-logs/${logId}/resend`);
+      if (!response.ok) {
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.error || "Failed to resend share link");
+      }
+      return response.json();
+    },
+    onSuccess() {
+      toast({
+        title: "Email resent",
+        description: "Another copy of the secure link was sent to the patient.",
+      });
+      refetchShareLinks();
+    },
+    onError(error) {
+      toast({
+        title: "Resend failed",
+        description: error instanceof Error ? error.message : "Failed to resend link",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleResendShareLink = (logId: number) => {
+    setResendingLogId(logId);
+    resendShareEmailMutation.mutate(logId, {
+      onSettled() {
+        setResendingLogId((current) => (current === logId ? null : current));
+      },
+    });
+  };
+
+  useEffect(() => {
+    if (showShareLinksDialog && currentLinkForm) {
+      refetchShareLinks();
+    }
+  }, [showShareLinksDialog, currentLinkForm, refetchShareLinks]);
   const [editingClinicInfo, setEditingClinicInfo] = useState({
     name: "",
     address: "",
@@ -5337,161 +6039,171 @@ Coverage Details: [Insurance Coverage]`;
 
       {/* Scrollable Content Wrapper */}
       <div className="flex-1 overflow-y-auto">
-        {/* Top Header - Professional Medical Theme */}
-        <div className="px-6 py-4 flex-shrink-0 bg-white dark:bg-[hsl(var(--cura-midnight))] border-b-2 border-gray-200 dark:border-[hsl(var(--cura-steel))]">
-          <div className="flex items-center justify-between gap-8">
-            <div className="flex items-center gap-4">
+        <div className="px-6 py-6 space-y-6 bg-gray-50 dark:bg-[#090b13] border-b border-dashed border-gray-200 dark:border-gray-800">
+          <Tabs
+            value={activeFormsTab}
+            onValueChange={(value) => setActiveFormsTab(value as FormsTab)}
+            defaultValue="dynamic"
+            className="space-y-6"
+          >
+          <TabsList className="grid grid-cols-5 gap-2 rounded-2xl border bg-white/80 p-1 text-xs font-semibold text-slate-600">
+            {!userIsPatient && (
+              <>
+                <TabsTrigger value="dynamic">Dynamic Form Builder</TabsTrigger>
+                <TabsTrigger value="saved">Saved Forms</TabsTrigger>
+              </>
+            )}
+            <TabsTrigger value="filled">Filled Forms</TabsTrigger>
+            {!userIsPatient && (
+              <TabsTrigger value="editor">Document Editor</TabsTrigger>
+            )}
+          </TabsList>
 
-              <Button
-                className="h-10 px-5 text-sm font-medium shadow-lg transition-all duration-300 border-2 bg-white dark:bg-gray-800 text-black dark:text-white border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 hover:-translate-y-0.5 rounded-[10px]"
-                onClick={handlePreview}
-              >
-                Preview
-              </Button>
-              <Button
-                className="h-10 px-5 text-sm font-medium shadow-lg transition-all duration-300 border-2 bg-white dark:bg-gray-800 text-black dark:text-white border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 hover:-translate-y-0.5 rounded-[10px]"
-                onClick={handleSaveAsDraft}
-              >
-                View Draft
-              </Button>
-            </div>
+          {!userIsPatient && (
+            <TabsContent value="dynamic" className="space-y-6">
+              <div className="space-y-2">
+                <p className="text-sm font-semibold text-gray-600 dark:text-gray-300">Dynamic Form Builder</p>
+                <p className="text-xs text-gray-500 dark:text-gray-500">
+                  Sections, fields, and sharing logic are now fully dynamic. Build once and send secure links to patients via email.
+                </p>
+              </div>
+              <FormBuilder
+                loadForm={formLoadPayload}
+                onLoadComplete={() => setFormLoadPayload(undefined)}
+              />
+            </TabsContent>
+          )}
 
-            <div className="flex items-center gap-4">
-            
+          {!userIsPatient && (
+            <TabsContent value="editor" className="space-y-6">
+              {/* Top Header - Professional Medical Theme */}
+              <div className="px-6 py-4 flex-shrink-0 bg-white dark:bg-[hsl(var(--cura-midnight))] border-b-2 border-gray-200 dark:border-[hsl(var(--cura-steel))]">
+                <div className="flex items-center justify-between gap-8">
+                  <div className="flex items-center gap-4">
+                    <Button
+                      className="h-10 px-5 text-sm font-medium shadow-lg transition-all duration-300 border-2 bg-white dark:bg-gray-800 text-black dark:text-white border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 hover:-translate-y-0.5 rounded-[10px]"
+                      onClick={handlePreview}
+                    >
+                      Preview..
+                    </Button>
+                    <Button
+                      className="h-10 px-5 text-sm font-medium shadow-lg transition-all duration-300 border-2 bg-white dark:bg-gray-800 text-black dark:text-white border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 hover:-translate-y-0.5 rounded-[10px]"
+                      onClick={handleSaveAsDraft}
+                    >
+                      View Draft..
+                    </Button>
+                  </div>
 
-              <div className="h-8 w-px bg-white/30 mx-1"></div>
+                  <div className="flex items-center gap-4">
+                    <Button
+                      className="h-10 px-5 text-sm font-medium shadow-lg transition-all duration-300 border-2 bg-white dark:bg-gray-800 text-black dark:text-white border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 hover:-translate-y-0.5 rounded-[10px]"
+                      onClick={() => setShowShareDialog(true)}
+                    >
+                      Share this...
+                    </Button>
+                    {user?.role === "patient" && (
+                      <>
+                        <div className="h-8 w-px bg-white/30 mx-1"></div>
+                        <Button
+                          className="h-10 px-5 text-sm font-medium shadow-lg transition-all duration-300 border-2 bg-white dark:bg-gray-800 text-black dark:text-white border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 hover:-translate-y-0.5 rounded-[10px]"
+                          onClick={() => setShowPatientTemplateDialog(true)}
+                        >
+                          Letters
+                        </Button>
+                      </>
+                    )}
+                    {user?.role !== "patient" && (
+                      <>
+                        <div className="h-8 w-px bg-white/30 mx-1"></div>
+                        <Button
+                          className="h-10 px-5 text-sm font-medium shadow-lg transition-all duration-300 border-2 bg-white dark:bg-gray-800 text-black dark:text-white border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 hover:-translate-y-0.5 rounded-[10px]"
+                          onClick={() => setShowDoctorTemplateDialog(true)}
+                        >
+                          Doctor Templates
+                        </Button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
 
-          
-              <Button
-                className="h-10 px-5 text-sm font-medium shadow-lg transition-all duration-300 border-2 bg-white dark:bg-gray-800 text-black dark:text-white border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 hover:-translate-y-0.5 rounded-[10px]"
-                onClick={() => setShowShareDialog(true)}
-              >
-                Share this...
-              </Button>
-              
-              {/* Patient Template Dropdown - Only show for patients */}
-              {user?.role === "patient" && (
-                <>
-                  <div className="h-8 w-px bg-white/30 mx-1"></div>
+              {/* Toolbar - medical theme colors */}
+              <div className="bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex-shrink-0">
+                <div className="flex justify-center items-center gap-1 flex-wrap">
                   <Button
-                    className="h-10 px-5 text-sm font-medium shadow-lg transition-all duration-300 border-2 bg-white dark:bg-gray-800 text-black dark:text-white border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 hover:-translate-y-0.5 rounded-[10px]"
-                    onClick={() => setShowPatientTemplateDialog(true)}
+                    size="sm"
+                    className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
+                    onClick={() => setShowAllTemplatesDialog(true)}
                   >
-                    Letters
+                    Templates
                   </Button>
-                </>
-              )}
-
-              {/* Doctor Template Dropdown - Only show for non-patients */}
-              {user?.role !== "patient" && (
-                <>
-                  <div className="h-8 w-px bg-white/30 mx-1"></div>
                   <Button
-                    className="h-10 px-5 text-sm font-medium shadow-lg transition-all duration-300 border-2 bg-white dark:bg-gray-800 text-black dark:text-white border-gray-200 dark:border-gray-600 hover:bg-gray-50 dark:hover:bg-gray-700 hover:-translate-y-0.5 rounded-[10px]"
-                    onClick={() => setShowDoctorTemplateDialog(true)}
+                    size="sm"
+                    className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
+                    onClick={handleSave}
+                    data-testid="button-save-template"
                   >
-                    Doctor Templates
+                    Save Template
                   </Button>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-
-      
-    
-        {/* Toolbar - medical theme colors */}
-        <div className="bg-gray-50 dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700 px-4 py-3 flex-shrink-0">
-     
-       
-          {/* Save, Download, Print and View buttons - medical theme colors */}
-          <div className="flex justify-center items-center gap-1 flex-wrap">
-
-            <Button
-              size="sm"
-              className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
-              onClick={() => setShowAllTemplatesDialog(true)}
-            >
-              Templates
-            </Button>
-            
-            <Button
-              size="sm"
-              className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
-              onClick={handleSave}
-              data-testid="button-save-template"
-            >
-              Save Template
-            </Button>
-            <Button
-              data-bluewave="true"
-              size="sm"
-              className="text-xs h-7 px-4 py-2 mt-5"
-              onClick={handleDownload}
-              data-testid="button-download"
-            >
-              <Download className="h-3 w-3 mr-1" />
-             
-            </Button>
-            <Button
-              data-bluewave="true"
-              size="sm"
-              className="text-xs h-7 px-4 py-2 mt-5"
-              onClick={handlePrint}
-              data-testid="button-print"
-            >
-              <Printer className="h-3 w-3 mr-1" />
-             
-            </Button>
-            <Button
-              size="sm"
-              className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
-              onClick={handleInsertLogo}
-            >
-              Logo
-            </Button>
-            <Button
-              size="sm"
-              className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
-              onClick={() => setShowCreateClinicInfoDialog(true)}
-              data-testid="button-create-clinic-info"
-            >
-              Create Clinic Information
-            </Button>
-            <Button
-              size="sm"
-              className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
-              onClick={() => setShowViewClinicInfoDialog(true)}
-              data-testid="button-view-clinic-info"
-            >
-              View Custom Clinic Information
-            </Button>
-            {/* <Button
-              size="sm"
-              className="text-xs h-7 px-4 py-2 mt-5 bg-white text-black  border border-lightgray-400"
-              onClick={handleClinic}
-            >
-              Clinic
-            </Button> */}
-            <Button
-              size="sm"
-              className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
-              onClick={handleClinicalHeader}
-              data-testid="button-clinical-header"
-            >
-              Clinical Header
-            </Button>
-            <Button
-              size="sm"
-              className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
-              onClick={() => setShowSavedTemplatesDialog(true)}
-            >
-              View Saved Templates
-            </Button>
-          </div>
-
-          {/* Main formatting row */}
-          <div className="flex justify-center items-center gap-0.5 mb-2 mt-3">
+                  <Button
+                    data-bluewave="true"
+                    size="sm"
+                    className="text-xs h-7 px-4 py-2 mt-5"
+                    onClick={handleDownload}
+                    data-testid="button-download"
+                  >
+                    <Download className="h-3 w-3 mr-1" />
+                  </Button>
+                  <Button
+                    data-bluewave="true"
+                    size="sm"
+                    className="text-xs h-7 px-4 py-2 mt-5"
+                    onClick={handlePrint}
+                    data-testid="button-print"
+                  >
+                    <Printer className="h-3 w-3 mr-1" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
+                    onClick={handleInsertLogo}
+                  >
+                    Logo
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
+                    onClick={() => setShowCreateClinicInfoDialog(true)}
+                    data-testid="button-create-clinic-info"
+                  >
+                    Create Clinic Information
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
+                    onClick={() => setShowViewClinicInfoDialog(true)}
+                    data-testid="button-view-clinic-info"
+                  >
+                    View Custom Clinic Information
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
+                    onClick={handleClinicalHeader}
+                    data-testid="button-clinical-header"
+                  >
+                    Clinical Header
+                  </Button>
+                  <Button
+                    size="sm"
+                    className="text-xs h-7 px-4 py-2 mt-5 bg-white dark:bg-gray-800 text-black dark:text-white border border-gray-400 dark:border-gray-600"
+                    onClick={() => setShowSavedTemplatesDialog(true)}
+                  >
+                    View Saved Templates
+                  </Button>
+                </div>
+     {/* Main formatting row */}
+     <div className="flex justify-center items-center gap-0.5 mb-2 mt-3">
             {/* Font controls */}
             <Select
               value={textStyle}
@@ -5929,42 +6641,725 @@ Coverage Details: [Insurance Coverage]`;
             </Button>
           </div>
 
-        
-        </div>
+             
+              </div>
+              <div className="flex-1 bg-[hsl(var(--cura-mist))] dark:bg-[hsl(var(--cura-midnight))] overflow-y-auto min-h-0 mt-4">
+                    <div className="h-full flex items-start justify-center p-4">
+                      <div
+                        className="bg-white dark:bg-[hsl(var(--cura-midnight))] shadow-sm border border-white dark:border-[hsl(var(--cura-steel))] min-h-[600px] w-full max-w-[1200px] mx-auto"
+                        style={{ width: "700px", maxWidth: "700px" }}
+                      >
+                        <div className="p-6">
+                          <div
+                            ref={(el) => {
+                              if (el && el.innerHTML !== documentContent) {
+                                el.innerHTML = documentContent;
+                              }
+                              setTextareaRef(el as any);
+                            }}
+                            id="document-content-area"
+                            contentEditable
+                            onInput={(e) => setDocumentContent(e.currentTarget.innerHTML)}
+                            suppressContentEditableWarning
+                            data-placeholder="Start typing your document here..."
+                            className="w-full border-none outline-none text-[hsl(var(--cura-midnight))] dark:text-white leading-normal bg-transparent focus:outline-none [&:empty]:before:content-[attr(data-placeholder)] [&:empty]:before:text-gray-400"
+                            style={{
+                              fontSize: fontSize,
+                              lineHeight: "1.6",
+                              minHeight: "770px",
+                              maxWidth: "100%",
+                              fontFamily: fontFamily,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  </div>
 
-        {/* Document Editor - medical theme colors */}
-        <div className="flex-1 bg-[hsl(var(--cura-mist))] dark:bg-[hsl(var(--cura-midnight))] overflow-y-auto min-h-0">
-          <div className="h-full flex items-start justify-center p-4">
-            <div
-              className="bg-white dark:bg-[hsl(var(--cura-midnight))] shadow-sm border border-white dark:border-[hsl(var(--cura-steel))] min-h-[600px] w-full max-w-[1200px] mx-auto"
-              style={{ width: "700px", maxWidth: "700px" }}
-            >
-              <div className="p-6">
-                <div
-                  ref={(el) => {
-                    if (el && el.innerHTML !== documentContent) {
-                      el.innerHTML = documentContent;
+
+            </TabsContent>
+          )}
+
+          {!userIsPatient && (
+            <TabsContent value="saved" className="space-y-6">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-gray-600 dark:text-gray-300">Saved Forms</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-500">
+                    Send one of your saved dynamic forms to a patient using a secure link.
+                  </p>
+                </div>
+                <span className="text-xs text-gray-400">Auto synced</span>
+              </div>
+              {formsLoading ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400">Loading saved forms…</p>
+              ) : savedForms.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400">No forms saved yet. Create one above to start sharing.</p>
+              ) : (
+                <div className="space-y-3 max-h-[770px] overflow-y-auto pr-2">
+                  {savedFormsToDisplay.map((form) => {
+                    const creatorId =
+                      form.createdBy ??
+                      form.metadata?.createdBy ??
+                      form.metadata?.created_by ??
+                      form.metadata?.userId;
+                    const creator = creatorId ? creatorsById.get(Number(creatorId)) : undefined;
+                    return (
+                    <div
+                      key={form.id}
+                      className="flex flex-col justify-between gap-4 p-4 border rounded-lg bg-white dark:bg-[#0b0c16] border-gray-200 dark:border-gray-800"
+                    >
+                      <div className="space-y-1">
+                        <div className="flex items-center gap-2">
+                          <p className="font-semibold text-gray-800 dark:text-gray-100">{form.title}</p>
+                        </div>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">{form.description || "No description provided."}</p>
+                        <p className="text-xs text-gray-400">Created {new Date(form.createdAt).toLocaleDateString()}</p>
+                        {creator && (
+                          <p className="text-xs text-gray-400">
+                            Created by {creator.name}
+                            {creator.email ? ` (${creator.email})` : ""}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openFormShareDialog(form)}
+                            disabled={patientsLoading || !patientsFromTable.length}
+                          >
+                            Share
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => handleViewFormResponses(form)}
+                          >
+                            View responses
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => {
+                              if (!window.confirm("Delete this form and all its data?")) return;
+                              deleteFormMutation.mutate(form.id);
+                            }}
+                            disabled={deleteFormMutation.isPending}
+                          >
+                            Delete
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => openShareLinksDialog(form)}
+                          >
+                            Links
+                          </Button>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            onClick={() => loadFormIntoBuilder(form)}
+                          >
+                            Edit
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            disabled={!latestLinks[form.id]}
+                            asChild
+                          >
+                            <a
+                              href={latestLinks[form.id]}
+                              target="_blank"
+                              rel="noreferrer"
+                              className={!latestLinks[form.id] ? "pointer-events-none opacity-60" : ""}
+                            >
+                              Open Form
+                            </a>
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                </div>
+              )}
+            </TabsContent>
+          )}
+
+            <TabsContent value="filled">
+              <div className="flex items-center justify-between mb-4">
+                <div>
+                  <p className="text-sm font-semibold text-gray-600 dark:text-gray-300">Filled Forms</p>
+                  <p className="text-xs text-gray-500 dark:text-gray-500">
+                    Completed forms stored as PDF documents for quick reference.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <span>{filledFormsLoading ? "Loading…" : `${filteredFilledForms.length} form(s)`}</span>
+                  <span className="h-5 border-l border-gray-300" />
+                  <Button
+                    size="sm"
+                    variant={filledViewMode === "grid" ? "default" : "outline"}
+                    onClick={() => setFilledViewMode("grid")}
+                    className="px-3"
+                  >
+                    Grid
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant={filledViewMode === "list" ? "default" : "outline"}
+                    onClick={() => setFilledViewMode("list")}
+                    className="px-3"
+                  >
+                    List
+                  </Button>
+                </div>
+              </div>
+              {activeFormsTab === "filled" && (
+                <div className="flex flex-wrap items-end gap-3 mb-4">
+                <div className="flex-1 min-w-[220px] space-y-1">
+                  <Label className="text-[11px] uppercase text-gray-400">Form Name</Label>
+                  <div>
+                    <Command className="relative overflow-visible rounded-md border border-gray-200 bg-white">
+                      <CommandInput
+                        placeholder="Search forms"
+                        value={filterFormName}
+                        onValueChange={setFilterFormName}
+                        className="text-sm pr-10"
+                        onFocus={() => openDropdown("formName")}
+                        onBlur={() => closeDropdown("formName")}
+                      />
+                      <ChevronsUpDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+                      {activeFilledDropdown === "formName" && (
+                        <CommandList className="absolute inset-x-0 top-full z-50 mt-1 rounded-xl border border-gray-200 bg-white shadow-lg shadow-gray-400/10 max-h-60 overflow-auto">
+                          <CommandEmpty>No forms found</CommandEmpty>
+                          <CommandGroup>
+                            {formNames.map((name) => (
+                              <CommandItem
+                                key={name}
+                                value={name}
+                                onSelect={() => {
+                                  setFilterFormName(name);
+                                  closeCommandMenu();
+                                }}
+                              >
+                                {name}
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      )}
+                    </Command>
+                  </div>
+                </div>
+                <div className="flex-1 min-w-[220px] space-y-1">
+                  <Label className="text-[11px] uppercase text-gray-400">Form ID</Label>
+                  <div>
+                    <Command className="relative overflow-visible rounded-md border border-gray-200 bg-white">
+                      <CommandInput
+                        placeholder="Generated form ID"
+                        value={filterFormId}
+                        onValueChange={setFilterFormId}
+                        className="text-sm pr-10"
+                        onFocus={() => openDropdown("formId")}
+                        onBlur={() => closeDropdown("formId")}
+                      />
+                      <ChevronsUpDown className="absolute right-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400 pointer-events-none" />
+                      {activeFilledDropdown === "formId" && (
+                        <CommandList className="absolute inset-x-0 top-full z-50 mt-1 rounded-xl border border-gray-200 bg-white shadow-lg shadow-gray-400/10 max-h-60 overflow-auto">
+                          <CommandEmpty>No form IDs found</CommandEmpty>
+                          <CommandGroup>
+                            {formIds.map((id) => (
+                              <CommandItem
+                                key={id}
+                                value={id}
+                                onSelect={() => {
+                                  setFilterFormId(id);
+                                  closeCommandMenu();
+                                }}
+                              >
+                                {id}
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        </CommandList>
+                      )}
+                    </Command>
+                  </div>
+                </div>
+                  <div className="flex-1 min-w-[200px] space-y-1">
+                    <Label className="text-[11px] uppercase text-gray-400">Date</Label>
+                    <Input
+                      type="date"
+                      value={filterDate}
+                      onChange={(event) => {
+                        setFilterDate(event.target.value);
+                        setFilterFormName("");
+                        setFilterFormId("");
+                        closeAllFilledDropdowns();
+                      }}
+                      className="text-sm"
+                    />
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-gray-500 ml-auto">
+                    <Button size="sm" variant="ghost" onClick={resetFilters}>
+                      <RefreshCw className="h-4 w-4" />
+                    </Button>
+                    <span>Reset filters</span>
+                  </div>
+                </div>
+              )}
+              {filledFormsLoading ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400">Loading filled forms…</p>
+              ) : filteredFilledForms.length === 0 ? (
+                <p className="text-sm text-gray-500 dark:text-gray-400">
+                  No filled forms match that filter. Adjust your search or submit a new response.
+                </p>
+              ) : filledViewMode === "grid" ? (
+                <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+                  {filteredFilledForms.map((doc: any) => (
+                    <div
+                      key={doc.id}
+                      className="flex flex-col justify-between gap-3 p-4 border rounded-lg bg-white dark:bg-[#0b0c16] border-gray-200 dark:border-gray-800"
+                    >
+                      {filledFormCardContent(doc)}
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {filteredFilledForms.map((doc: any) => {
+                    const creatorInfo = resolveFormCreator(doc);
+                    return (
+                      <div
+                      key={doc.id}
+                      className="border border-gray-200 dark:border-gray-800 rounded-[18px] bg-white dark:bg-[#0b0c16] shadow-sm overflow-hidden"
+                    >
+                      <div className="flex flex-col gap-4 p-5 md:flex-row md:items-start md:justify-between">
+                        <div className="flex-1 space-y-1">
+                          <p className="text-xs uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                            Form response
+                          </p>
+                          <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                            {doc.name || "Untitled form"}
+                            {doc.metadata?.responseId ? ` response ${doc.metadata.responseId}` : ""}
+                          </p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                            Patient:{" "}
+                            {(() => {
+                              const patientName =
+                                doc.patientName ||
+                                doc.metadata?.patientName ||
+                                [
+                                  doc.metadata?.patient?.firstName,
+                                  doc.metadata?.patient?.lastName,
+                                ]
+                                  .filter(Boolean)
+                                  .join(" ")
+                                  .trim() ||
+                                "Unknown Patient";
+                              return patientName;
+                            })()}
+                          </p>
+                          {(() => {
+                            const patientEmail =
+                              doc.metadata?.patientEmail ||
+                              doc.patientEmail ||
+                              doc.metadata?.patient?.email;
+                            return patientEmail ? (
+                              <p className="text-xs text-gray-500 dark:text-gray-400">
+                                {patientEmail}
+                              </p>
+                            ) : null;
+                          })()}
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                            Form ID: {doc.metadata?.formId ?? "—"} • Response #
+                            {doc.metadata?.responseId ?? "—"}
+                          </p>
+                          <p className="text-xs text-gray-500 dark:text-gray-400">
+                            Created {new Date(doc.createdAt).toLocaleString()}
+                          </p>
+                          {creatorInfo && (
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                              Created by {creatorInfo.name}
+                              {creatorInfo.email ? ` (${creatorInfo.email})` : ""}
+                            </p>
+                          )}
+                        </div>
+                        <div className="flex flex-col gap-3 w-full max-w-sm">
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => loadFilledForm(doc)}
+                            >
+                              View
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => downloadFilledForm(doc)}
+                            >
+                              Download
+                            </Button>
+                          </div>
+                          {doc.insurance && (
+                            <div className="rounded-lg border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/40 p-3">
+                              <p className="text-xs uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                                Insurance
+                              </p>
+                              <p className="text-sm text-gray-800 dark:text-gray-200">
+                                {doc.insurance.provider}
+                              </p>
+                              <p className="text-xs text-gray-400">
+                                Claim: {doc.insurance.claimNumber}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="forms">
+              <FormFill />
+            </TabsContent>
+          </Tabs>
+        </div>
+        <Dialog
+          open={showFormShareDialog}
+          onOpenChange={(isOpen) => {
+            if (!isOpen) {
+              closeFormShareDialog();
+            }
+          }}
+        >
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Share form with patient</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4 mt-2">
+              <p className="text-sm text-gray-600 dark:text-gray-400">
+                {selectedFormForShare
+                  ? `Sharing “${selectedFormForShare.title}”.`
+                  : "Select a form from the list to continue."}
+              </p>
+              <div className="space-y-2">
+                <Label className="text-sm font-medium">Select patient</Label>
+                <Select
+                  value={selectedFormPatientId}
+                  onValueChange={setSelectedFormPatientId}
+                  disabled={patientsLoading || !patientsFromTable.length}
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder={patientsLoading ? "Loading patients…" : "Choose patient"} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {patientsFromTable.length === 0 ? (
+                      <SelectItem value="">No patients available</SelectItem>
+                    ) : (
+                      patientsFromTable.map((patient) => (
+                        <SelectItem key={patient.id} value={String(patient.id)}>
+                          {patient.firstName} {patient.lastName} ({patient.email || "no email"})
+                        </SelectItem>
+                      ))
+                    )}
+                  </SelectContent>
+                </Select>
+                <p
+                  className={`text-xs ${
+                    selectedFormPatientId && selectedPatient?.email
+                      ? "text-emerald-600"
+                      : selectedFormPatientId
+                      ? "text-orange-500"
+                      : "text-slate-500"
+                  }`}
+                >
+                  {selectedFormPatientId
+                    ? selectedPatient?.email
+                      ? `Will email ${selectedPatient.email}`
+                      : "This patient does not have an email on file."
+                    : "Select a patient to see their contact email."}
+                </p>
+              </div>
+              {shareFormMutation.error && (
+                <p className="text-xs text-red-500">
+                  {shareFormMutation.error instanceof Error
+                    ? shareFormMutation.error.message
+                    : "Unable to share the form"}
+                </p>
+              )}
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={closeFormShareDialog}
+                  disabled={shareFormMutation.isPending}
+                >
+                  Cancel
+                </Button>
+                  <Button
+                    onClick={() => previewEmailMutation.mutate()}
+                    variant="outline"
+                    disabled={previewEmailMutation.isPending || !selectedFormPatientId || !selectedPatient?.email}
+                  >
+                    {previewEmailMutation.isPending ? "Generating…" : "Preview email"}
+                  </Button>
+                  <Button
+                    onClick={() => shareFormMutation.mutate()}
+                    disabled={
+                      shareFormMutation.isPending ||
+                      !selectedFormPatientId ||
+                      !selectedPatient?.email
                     }
-                    setTextareaRef(el as any);
-                  }}
-                  id="document-content-area"
-                  contentEditable
-                  onInput={(e) => setDocumentContent(e.currentTarget.innerHTML)}
-                  suppressContentEditableWarning
-                  data-placeholder="Start typing your document here..."
-                  className="w-full border-none outline-none text-[hsl(var(--cura-midnight))] dark:text-white leading-normal bg-transparent focus:outline-none [&:empty]:before:content-[attr(data-placeholder)] [&:empty]:before:text-gray-400"
-                  style={{
-                    fontSize: fontSize,
-                    lineHeight: "1.6",
-                    minHeight: "770px",
-                    maxWidth: "100%",
-                    fontFamily: fontFamily,
-                  }}
-                />
+                  >
+                    {shareFormMutation.isPending ? "Sending…" : "Send form"}
+                  </Button>
+                  {emailPreview?.link && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      asChild
+                    >
+                      <a href={emailPreview.link} target="_blank" rel="noreferrer">
+                        Open Form
+                      </a>
+                    </Button>
+                  )}
               </div>
             </div>
-          </div>
+          </DialogContent>
+        </Dialog>
+    <Dialog
+      open={responseDialogOpen}
+      onOpenChange={(open) => {
+        if (!open) {
+          setResponseDialogOpen(false);
+          setSelectedFormForResponses(null);
+          setFormResponsesData(null);
+          setFormResponsesLoading(false);
+        }
+      }}
+    >
+      <DialogContent className="max-w-6xl max-h-[800px] overflow-y-auto">
+        <DialogHeader className="flex flex-col gap-2">
+          <DialogTitle className="flex-1 min-w-0">
+            Responses for {selectedFormForResponses?.title || formResponsesData?.formTitle || "form"}
+          </DialogTitle>
+          <p className="text-xs text-gray-500">
+            Created by{" "}
+            {selectedFormForResponses
+              ? creatorsById.get(resolveFormCreatorId(selectedFormForResponses) ?? 0)?.name ??
+                "Unknown creator"
+              : "Unknown"}
+          </p>
+          <p className="text-xs text-gray-500">
+            {formResponsesData?.responses.length ?? "0"} responses
+          </p>
+        </DialogHeader>
+        <div className="space-y-4">
+          {formResponsesLoading ? (
+            <p className="text-sm text-gray-500">Loading responses…</p>
+          ) : !formResponsesData?.responses.length ? (
+            <p className="text-sm text-gray-500">No responses have been collected yet.</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full table-auto text-sm">
+                <thead className="text-xs uppercase text-gray-500">
+                  <tr>
+                    <th className="px-3 py-2 text-left">Patient</th>
+                    <th className="px-3 py-2 text-left">Submitted at</th>
+                    {formResponsesData.fields.map((field) => (
+                      <th key={field.id} className="px-3 py-2 text-left">
+                        {field.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {formResponsesData.responses.map((response) => {
+                    const patient = response.patient;
+                    const submitted = response.submittedAt
+                      ? new Date(response.submittedAt).toLocaleString()
+                      : "—";
+                    const answerMap = new Map(
+                      response.answers.map((answer) => [answer.fieldId, answer]),
+                    );
+                    const renderCellValue = (value: any) => {
+                      if (value === null || value === undefined) return "—";
+                      if (typeof value === "object") return JSON.stringify(value);
+                      return String(value);
+                    };
+                    const patientName = patient
+                      ? `${patient.firstName ?? ""} ${patient.lastName ?? ""}`.trim() || "Unnamed patient"
+                      : "Unknown patient";
+                    return (
+                      <tr key={response.responseId} className="border-b border-gray-100">
+                        <td className="px-3 py-2 align-top">
+                          <p className="font-semibold text-gray-900">{patientName}</p>
+                          {patient?.email && (
+                            <p className="text-xs text-gray-500">{patient.email}</p>
+                          )}
+                          {patient?.phone && (
+                            <p className="text-xs text-gray-500">Phone: {patient.phone}</p>
+                          )}
+                          {patient?.nhsNumber && (
+                            <p className="text-xs text-gray-500">NHS: {patient.nhsNumber}</p>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 align-top text-gray-600">{submitted}</td>
+                        {formResponsesData.fields.map((field) => {
+                          const answer = answerMap.get(field.id);
+                          return (
+                            <td key={`${response.responseId}-${field.id}`} className="px-3 py-2 align-top">
+                              {answer ? renderCellValue(answer.value) : "—"}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
+        <div className="flex justify-end mt-4 gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={downloadResponsesCsv}
+            disabled={!formResponsesData}
+          >
+            Download responses
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setResponseDialogOpen(false)}
+          >
+            Close
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+        <Dialog open={showShareLinksDialog} onOpenChange={(open) => !open && closeShareLinksDialog()}>
+          <DialogContent className="max-w-3xl max-h-[80vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle>Link history</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              {shareLinksLoading ? (
+                <p className="text-sm text-muted-foreground">Loading share history…</p>
+              ) : currentLinkForm ? (
+                shareLinks.length === 0 ? (
+                  <p className="text-sm text-muted-foreground">
+                    No links have been generated for {currentLinkForm.title} yet.
+                  </p>
+                ) : (
+                  shareLinks.map((entry: any) => (
+                    <Card key={entry.id} className="border border-dashed">
+                      <CardContent className="gap-2 space-y-1 p-3">
+                        <div className="flex items-center justify-between text-xs text-muted-foreground">
+                          <span>
+                            Patient: {entry.patientFirstName || "Unknown"} {entry.patientLastName || ""} (
+                            {entry.patientEmail || "no email"})
+                          </span>
+                          <span>
+                            {new Date(entry.createdAt).toLocaleString()}
+                          </span>
+                        </div>
+                        <div className="flex flex-col gap-1 text-[11px] text-slate-600">
+                          <a href={entry.link} target="_blank" rel="noreferrer" className="text-primary underline">
+                            {entry.link}
+                          </a>
+                          <span>Email delivered: {entry.emailSent ? "Yes" : "No"}</span>
+                          {entry.emailSubject && <span>Subject: {entry.emailSubject}</span>}
+                          {entry.emailError && (
+                            <span className="text-[11px] text-rose-500">
+                              Error: {entry.emailError}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex justify-end gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleResendShareLink(entry.id)}
+                            disabled={resendingLogId === entry.id && resendShareEmailMutation.isPending}
+                          >
+                            {resendingLogId === entry.id && resendShareEmailMutation.isPending
+                              ? "Resending…"
+                              : "Resend email"}
+                          </Button>
+                          <Button size="sm" variant="outline" asChild>
+                            <a href={entry.link} target="_blank" rel="noreferrer">
+                              Open form
+                            </a>
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))
+                )
+              ) : (
+                <p className="text-sm text-muted-foreground">Select a form first.</p>
+              )}
+            </div>
+          </DialogContent>
+        </Dialog>
+        <Dialog open={previewDialogOpen} onOpenChange={setPreviewDialogOpen}>
+          <DialogContent className="max-w-3xl">
+            <DialogHeader>
+              <DialogTitle>Email preview</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <p className="text-sm text-muted-foreground">
+                This is the exact email that will be sent to {selectedPatient?.email} once shared.
+              </p>
+              <Card className="border border-dashed border-slate-200 shadow-none">
+                <CardContent className="p-4">
+                  {emailPreview?.html ? (
+                    <div className="prose max-w-none" dangerouslySetInnerHTML={{ __html: emailPreview.html }} />
+                  ) : (
+                    <p className="text-xs text-muted-foreground">No preview available.</p>
+                  )}
+                </CardContent>
+              </Card>
+              <div className="space-y-2 rounded-lg border bg-white p-3 text-xs text-muted-foreground">
+                <div>
+                  <span className="font-semibold">Subject:</span> {emailPreview?.subject}
+                </div>
+                <div>
+                  <span className="font-semibold">Link:</span>{" "}
+                  <a href={emailPreview?.link} target="_blank" rel="noreferrer" className="underline text-primary">
+                    {emailPreview?.link}
+                  </a>
+                </div>
+                <div>
+                  <span className="font-semibold">Text version:</span> {emailPreview?.text}
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <Button variant="outline" onClick={() => setPreviewDialogOpen(false)}>
+                  Close
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+        {/* Top Header - Professional Medical Theme */}
+   
+    
+   
+
       </div>
 
       {/* Insert Link Dialog */}

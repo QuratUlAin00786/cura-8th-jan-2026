@@ -5,7 +5,7 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { queryClient, apiRequest } from "@/lib/queryClient";
-import { AiInsight, insertAiInsightSchema } from "@shared/schema";
+import { AiInsight } from "@shared/schema";
 import { getActiveSubdomain } from "@/lib/subdomain-utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -56,18 +56,39 @@ import { useAuth } from "@/hooks/use-auth";
 import { Header } from "@/components/layout/header";
 import jsPDF from "jspdf";
 
-// Use the actual database schema for form validation, excluding server-managed fields
-const createInsightSchema = insertAiInsightSchema.omit({
-  organizationId: true,
-  id: true,
-  createdAt: true
-});
+// Use a focused schema for the insight creation form
+const createInsightSchema = z
+  .object({
+  patientId: z.number().optional(),
+  type: z.enum([
+    "risk_alert",
+    "drug_interaction",
+    "treatment_suggestion",
+    "preventive_care",
+  ]),
+  title: z.string().min(1),
+  description: z.string().min(1),
+  severity: z.enum(["low", "medium", "high", "critical"]),
+  actionRequired: z.boolean(),
+  confidence: z.string().regex(/^(0(\.\d+)?|1(\.0+)?)$/, "Confidence must be between 0 and 1"),
+  symptoms: z.string().optional().nullable(),
+  history: z.string().optional().nullable(),
+  status: z.string().default("active"),
+  aiStatus: z.string().default("pending"),
+  })
+  .passthrough();
 
 type CreateInsightForm = z.infer<typeof createInsightSchema>;
 
 // Use the actual database type with additional fields for UI
 type ClinicalInsight = AiInsight & {
   patientName?: string; // Add computed field for display
+};
+
+type AddDrugInteractionDialogProps = {
+  open: boolean;
+  onClose: () => void;
+  onSuccess: () => void;
 };
 
 interface RiskScore {
@@ -563,19 +584,28 @@ export default function ClinicalDecisionSupport() {
   }, [assessmentResult, isGeneratingAssessment]);
 
   // Create new insight mutation
+  const [showCreateInsightSuccess, setShowCreateInsightSuccess] = useState(false);
+  const [createdInsightTitle, setCreatedInsightTitle] = useState<string | null>(null);
+
   const createInsightMutation = useMutation({
     mutationFn: async (data: CreateInsightForm) => {
-      return apiRequest("POST", `/api/ai-insights`, data);
+      const response = await apiRequest("POST", `/api/ai-insights`, data);
+      return response.json();
     },
     onSuccess: (data) => {
+      const title = data?.title || data?.insight?.title || data?.aiInsight?.title;
+      setCreatedInsightTitle(title || null);
       toast({
         title: "Insight Created",
-        description: "Successfully created new AI insight.",
+        description: title
+          ? `AI insight "${title}" created successfully.`
+          : "Successfully created new AI insight.",
       });
       // Invalidate and refetch immediately to show new data
       queryClient.invalidateQueries({ queryKey: ["/api/ai-insights"] });
       queryClient.refetchQueries({ queryKey: ["/api/ai-insights"] });
       form.reset();
+      setShowCreateInsightSuccess(true);
       setCreateInsightOpen(false);
     },
     onError: (error: any) => {
@@ -876,10 +906,10 @@ export default function ClinicalDecisionSupport() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-full-width">
       <Header title="Clinical Decision Support" subtitle="AI-powered insights and recommendations" />
       
-      <div className="container mx-auto px-4 lg:px-6 py-6 max-w-7xl">
+  <div className="w-full flex-1 overflow-auto px-4 lg:px-6 py-6 space-y-4">
         <div className="flex flex-wrap justify-end gap-3 mb-6">
           <Dialog open={createInsightOpen} onOpenChange={setCreateInsightOpen}>
             <DialogTrigger asChild>
@@ -1629,6 +1659,31 @@ export default function ClinicalDecisionSupport() {
                               <span className="font-medium">Test Date:</span> {format(new Date(selectedLabResult.testDate), 'MMM dd, yyyy')}
                             </div>
                           </div>
+      <Dialog open={showCreateInsightSuccess} onOpenChange={setShowCreateInsightSuccess}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="text-xl font-bold text-green-600">
+              AI Insight Generated
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col items-center gap-3 py-4 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+              <Check className="h-6 w-6" />
+            </span>
+            <p className="text-lg font-semibold text-gray-900">
+              {createdInsightTitle
+                ? `"${createdInsightTitle}" created successfully`
+                : "Insight created successfully"}
+            </p>
+            <p className="text-sm text-gray-500">
+              The insight has been saved and the Clinical Insights list was refreshed.
+            </p>
+          </div>
+          <div className="flex justify-end">
+            <Button onClick={() => setShowCreateInsightSuccess(false)}>OK</Button>
+          </div>
+        </DialogContent>
+      </Dialog>
                         </div>
                       )}
 
@@ -2103,7 +2158,7 @@ export default function ClinicalDecisionSupport() {
       </div>
     </div>
   );
-}
+};
 
 // Drug Interactions Tab Component
 function DrugInteractionsTab() {
@@ -2225,7 +2280,8 @@ function DrugInteractionsTab() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-full-width">
+      <div className="w-full px-4 lg:px-6 py-6 space-y-4">
       {/* Header with Summary */}
       <div className="bg-white dark:bg-gray-800 p-4 rounded-lg border">
         <div className="flex justify-between items-start mb-4">
@@ -2404,28 +2460,24 @@ function DrugInteractionsTab() {
           ))}
         </div>
       )}
-
-      {/* Add Drug Interaction Dialog */}
-      <AddDrugInteractionDialog 
-        open={showAddInteractionDialog}
-        onClose={() => setShowAddInteractionDialog(false)}
-        onSuccess={() => {
-          setShowAddInteractionDialog(false);
-          // Invalidate and refetch drug interactions data
-          queryClient.invalidateQueries({ queryKey: ['/api/clinical/drug-interactions'] });
-          refetch();
-        }}
-      />
-    </div>
+  {/* Add Drug Interaction Dialog */}
+  <AddDrugInteractionDialog 
+    open={showAddInteractionDialog}
+    onClose={() => setShowAddInteractionDialog(false)}
+    onSuccess={() => {
+      setShowAddInteractionDialog(false);
+      // Invalidate and refetch drug interactions data
+      queryClient.invalidateQueries({ queryKey: ['/api/clinical/drug-interactions'] });
+      refetch();
+    }}
+  />
+</div>
+</div>
   );
 }
 
 // Add Drug Interaction Dialog Component
-function AddDrugInteractionDialog({ open, onClose, onSuccess }: {
-  open: boolean;
-  onClose: () => void;
-  onSuccess: () => void;
-}) {
+const AddDrugInteractionDialog: React.FC<AddDrugInteractionDialogProps> = ({ open, onClose, onSuccess }) => {
   const [selectedPatientId, setSelectedPatientId] = React.useState<string>("");
   const [patientComboboxOpen, setPatientComboboxOpen] = React.useState(false);
   const [medication1Name, setMedication1Name] = React.useState("");
@@ -2781,4 +2833,4 @@ function AddDrugInteractionDialog({ open, onClose, onSuccess }: {
       </DialogContent>
     </Dialog>
   );
-}
+};

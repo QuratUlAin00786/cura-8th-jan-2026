@@ -1,6 +1,23 @@
 import { QueryClient, QueryFunction } from "@tanstack/react-query";
 import { isPermissionError, showPermissionDenied } from "./permission-error-handler";
 
+const API_BASE_URL = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+
+const DEFAULT_DEV_API = "http://localhost:1100";
+
+function buildUrl(path: string) {
+  if (path.startsWith("http")) {
+    return path;
+  }
+  if (API_BASE_URL) {
+    return `${API_BASE_URL.replace(/\/$/, "")}${path}`;
+  }
+  if (import.meta.env.DEV) {
+    return `${DEFAULT_DEV_API}${path}`;
+  }
+  return path;
+}
+
 async function throwIfResNotOk(res: Response) {
   if (!res.ok) {
     const text = (await res.text()) || res.statusText;
@@ -17,43 +34,55 @@ async function throwIfResNotOk(res: Response) {
 
 // Helper function to get the correct tenant subdomain
 export function getTenantSubdomain(): string {
-  // PRIORITY 1: Check for subdomain in URL path (e.g., /aaa/auth/login)
+  // PRIMARY SOURCE: authenticated user's stored subdomain (keeps routes like /billing from overriding tenant)
+  const userSubdomain = localStorage.getItem('user_subdomain');
+  if (userSubdomain) {
+    return userSubdomain;
+  }
+
+  // BACKWARD COMPATIBILITY: allow explicit ?subdomain=... parameters
+  const urlParams = new URLSearchParams(window.location.search);
+  const subdomainParam = urlParams.get('subdomain');
+  if (subdomainParam) {
+    return subdomainParam;
+  }
+
   const pathname = window.location.pathname;
   const pathParts = pathname.split('/').filter(Boolean);
+
+  // PRIORITY: Path contains subdomain as first segment (e.g., /cura/forms ...)
+  if (pathParts.length >= 1) {
+    const candidate = pathParts[0];
+    if (candidate && candidate !== "api" && candidate !== "__vite_ping") {
+      return candidate;
+    }
+  }
+
+  // Legacy auth path detection
   if (pathParts.length >= 2 && pathParts[1] === 'auth' && pathParts[2] === 'login') {
     const subdomainFromPath = pathParts[0];
     if (subdomainFromPath) {
       return subdomainFromPath;
     }
   }
-  
-  // PRIORITY 2: Check for subdomain query parameter (for backward compatibility)
-  const urlParams = new URLSearchParams(window.location.search);
-  const subdomainParam = urlParams.get('subdomain');
-  if (subdomainParam) {
-    return subdomainParam;
-  }
-  
-  // PRIORITY 3: Check localStorage for user's organization subdomain (set during login)
-  const userSubdomain = localStorage.getItem('user_subdomain');
-  if (userSubdomain) {
-    return userSubdomain;
-  }
-  
+
   const hostname = window.location.hostname;
-  
-  // For development/replit environments, use 'demo'
-  if (hostname.includes('.replit.app') || hostname.includes('localhost') || hostname.includes('replit.dev') || hostname.includes('127.0.0.1')) {
+
+  // Development/replit fallback
+  if (
+    hostname.includes('.replit.app') ||
+    hostname.includes('localhost') ||
+    hostname.includes('replit.dev') ||
+    hostname.includes('127.0.0.1')
+  ) {
     return 'demo';
   }
-  
-  // For production environments, extract subdomain from hostname
+
   const parts = hostname.split('.');
   if (parts.length >= 2) {
     return parts[0] || 'demo';
   }
-  
-  // Fallback to 'demo'
+
   return 'demo';
 }
 
@@ -75,7 +104,7 @@ export async function apiRequest(
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const res = await fetch(url, {
+  const res = await fetch(buildUrl(url), {
     method,
     headers,
     body: data ? JSON.stringify(data) : undefined,
@@ -110,7 +139,7 @@ export const getQueryFn: <T>(options: {
       console.log("Patients request - headers:", headers);
     }
     
-    const res = await fetch(queryKey[0] as string, {
+    const res = await fetch(buildUrl(queryKey[0] as string), {
       credentials: "include",
       headers
     });

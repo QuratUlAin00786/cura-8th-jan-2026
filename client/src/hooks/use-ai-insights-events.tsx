@@ -43,10 +43,25 @@ export function useAiInsightsEvents() {
       return;
     }
 
+    const token = localStorage.getItem('auth_token');
+    if (!token) {
+      console.warn('[SSE] No auth token available, skipping SSE connection');
+      return;
+    }
+
+    const subdomain =
+      tenant?.subdomain ||
+      localStorage.getItem('user_subdomain') ||
+      new URLSearchParams(window.location.search).get('subdomain') ||
+      'demo';
+
     try {
       // Create EventSource with credentials for authentication
-      const eventSource = new EventSource(`/api/ai-insights/events`, {
-        withCredentials: true
+      const url = `/api/ai-insights/events?token=${encodeURIComponent(token)}&subdomain=${encodeURIComponent(
+        subdomain,
+      )}`;
+      const eventSource = new EventSource(url, {
+        withCredentials: true,
       });
       
       eventSourceRef.current = eventSource;

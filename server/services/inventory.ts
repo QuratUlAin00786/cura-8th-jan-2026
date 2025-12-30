@@ -366,6 +366,76 @@ export class InventoryService {
       .orderBy(desc(inventoryPurchaseOrders.createdAt));
   }
 
+  async getPurchaseOrderItems(purchaseOrderId: number, organizationId: number) {
+    return await db
+      .select({
+        id: inventoryPurchaseOrderItems.id,
+        itemId: inventoryPurchaseOrderItems.itemId,
+        quantity: inventoryPurchaseOrderItems.quantity,
+        unitPrice: inventoryPurchaseOrderItems.unitPrice,
+        itemName: inventoryItems.name,
+      })
+      .from(inventoryPurchaseOrderItems)
+      .leftJoin(inventoryItems, eq(inventoryPurchaseOrderItems.itemId, inventoryItems.id))
+      .where(and(
+        eq(inventoryPurchaseOrderItems.purchaseOrderId, purchaseOrderId),
+        eq(inventoryPurchaseOrderItems.organizationId, organizationId)
+      ))
+      .orderBy(inventoryPurchaseOrderItems.id);
+  }
+
+  async getPurchaseOrderById(purchaseOrderId: number, organizationId: number) {
+    const [order] = await db
+      .select({
+        id: inventoryPurchaseOrders.id,
+        poNumber: inventoryPurchaseOrders.poNumber,
+        orderDate: inventoryPurchaseOrders.orderDate,
+        expectedDeliveryDate: inventoryPurchaseOrders.expectedDeliveryDate,
+        status: inventoryPurchaseOrders.status,
+        totalAmount: inventoryPurchaseOrders.totalAmount,
+        taxAmount: inventoryPurchaseOrders.taxAmount,
+        discountAmount: inventoryPurchaseOrders.discountAmount,
+        notes: inventoryPurchaseOrders.notes,
+        supplierName: inventorySuppliers.name,
+        supplierEmail: inventorySuppliers.email,
+        createdAt: inventoryPurchaseOrders.createdAt,
+        updatedAt: inventoryPurchaseOrders.updatedAt,
+        emailSent: inventoryPurchaseOrders.emailSent,
+        emailSentAt: inventoryPurchaseOrders.emailSentAt,
+      })
+      .from(inventoryPurchaseOrders)
+      .leftJoin(inventorySuppliers, eq(inventoryPurchaseOrders.supplierId, inventorySuppliers.id))
+      .where(and(
+        eq(inventoryPurchaseOrders.id, purchaseOrderId),
+        eq(inventoryPurchaseOrders.organizationId, organizationId)
+      ))
+      .limit(1);
+
+    if (!order) return null;
+
+    const itemsOrdered = await db
+      .select({
+        id: inventoryPurchaseOrderItems.id,
+        itemId: inventoryPurchaseOrderItems.itemId,
+        itemName: inventoryItems.name,
+        quantity: inventoryPurchaseOrderItems.quantity,
+        unitPrice: inventoryPurchaseOrderItems.unitPrice,
+        totalPrice: inventoryPurchaseOrderItems.totalPrice,
+      })
+      .from(inventoryPurchaseOrderItems)
+      .leftJoin(inventoryItems, eq(inventoryPurchaseOrderItems.itemId, inventoryItems.id))
+      .where(and(
+        eq(inventoryPurchaseOrderItems.purchaseOrderId, purchaseOrderId),
+        eq(inventoryPurchaseOrderItems.organizationId, organizationId)
+      ))
+      .orderBy(inventoryPurchaseOrderItems.id);
+
+    return {
+      ...order,
+      itemsOrdered,
+    };
+  }
+
   async sendPurchaseOrderEmail(purchaseOrderId: number, organizationId: number) {
     const [po] = await db
       .select({
@@ -697,6 +767,51 @@ Cura Healthcare Team
       .orderBy(desc(inventoryStockMovements.createdAt));
 
     return receipts;
+  }
+
+  async getGoodsReceiptById(receiptId: number, organizationId: number) {
+    const [movement] = await db
+      .select({
+        id: inventoryStockMovements.id,
+        receiptNumber: sql<string>`CONCAT('GR-', ${inventoryStockMovements.id})`,
+        purchaseOrderId: inventoryStockMovements.referenceId,
+        poNumber: inventoryPurchaseOrders.poNumber,
+        supplierName: inventorySuppliers.name,
+        receivedDate: inventoryStockMovements.createdAt,
+        totalAmount: sql<number>`${inventoryStockMovements.quantity} * ${inventoryStockMovements.unitCost}`,
+        notes: inventoryStockMovements.notes,
+      })
+      .from(inventoryStockMovements)
+      .leftJoin(inventoryPurchaseOrders, eq(inventoryStockMovements.referenceId, inventoryPurchaseOrders.id))
+      .leftJoin(inventorySuppliers, eq(inventoryPurchaseOrders.supplierId, inventorySuppliers.id))
+      .where(and(
+        eq(inventoryStockMovements.organizationId, organizationId),
+        eq(inventoryStockMovements.id, receiptId),
+        eq(inventoryStockMovements.movementType, 'purchase')
+      ))
+      .limit(1);
+
+    if (!movement) return null;
+
+    const items = await db
+      .select({
+        id: inventoryStockMovements.id,
+        itemId: inventoryStockMovements.itemId,
+        itemName: inventoryItems.name,
+        batchNumber: inventoryStockMovements.batchNumber,
+        expiryDate: inventoryStockMovements.expiryDate,
+        quantity: inventoryStockMovements.quantity,
+        unitPrice: inventoryStockMovements.unitCost,
+        totalPrice: sql<number>`(${inventoryStockMovements.quantity} * ${inventoryStockMovements.unitCost})`,
+      })
+      .from(inventoryStockMovements)
+      .leftJoin(inventoryItems, eq(inventoryStockMovements.itemId, inventoryItems.id))
+      .where(and(
+        eq(inventoryStockMovements.organizationId, organizationId),
+        eq(inventoryStockMovements.id, receiptId)
+      ));
+
+    return { ...movement, items };
   }
 
   async createGoodsReceipt(receiptData: any) {
@@ -1434,6 +1549,7 @@ Cura Healthcare Team
       const patientId = returnData.patientId || originalSale.patientId || null;
       const customerName = returnData.customerName || originalSale.customerName || null;
       const customerPhone = returnData.customerPhone || originalSale.customerPhone || null;
+      const returnDate = returnData.returnDate ? new Date(returnData.returnDate) : new Date();
       
       // Actual columns: id, organization_id, return_number, sale_id, patient_id, customer_name,
       // customer_phone, return_date, return_type, return_reason, subtotal_amount, total_amount,
@@ -1443,13 +1559,13 @@ Cura Healthcare Team
       
       const insertReturnQuery = `
         INSERT INTO inventory_returns (
-          organization_id, return_number, sale_id, return_type, 
+          organization_id, return_number, original_sale_id, return_type, 
           patient_id, customer_name, customer_phone,
-          subtotal_amount, total_amount, refund_amount, restocking_fee,
-          settlement_type, return_reason, notes,
-          status, processed_by, return_date, created_at, updated_at
+          subtotal_amount, total_amount, net_refund_amount, restocking_fee,
+        settlement_type, return_reason, internal_notes,
+          status, processed_by, initiated_by, return_date, created_at, updated_at
         ) VALUES (
-          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), NOW(), NOW()
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, NOW(), NOW()
         ) RETURNING *
       `;
       
@@ -1463,13 +1579,15 @@ Cura Healthcare Team
         customerPhone,
         subtotalAmount.toString(),
         totalAmount.toString(),
-        totalAmount.toString(),
+        netRefundAmount.toString(),
         restockingFee.toString(),
         returnData.settlementType,
         returnData.returnReason,
         returnData.internalNotes || returnData.returnReasonDetails || null,
         returnStatus,
-        returnData.initiatedBy
+        returnData.processedBy || null,
+        returnData.initiatedBy,
+        returnDate
       ]);
       
       const returnRecord = returnResult.rows[0];
@@ -1479,10 +1597,10 @@ Cura Healthcare Team
       // unit_price, total_amount, item_condition, restockable, restocked, reason, notes, created_at
       for (const returnItem of returnItems) {
         const insertItemQuery = `
-          INSERT INTO inventory_return_items (
-            organization_id, return_id, sale_item_id, item_id, batch_id,
-            quantity, unit_price, total_amount,
-            item_condition, restockable, reason, created_at
+        INSERT INTO inventory_return_items (
+            organization_id, return_id, original_sale_item_id, item_id, batch_id,
+            returned_quantity, unit_price, line_total,
+            condition_on_return, is_restockable, inspection_notes, created_at
           ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW()
           )

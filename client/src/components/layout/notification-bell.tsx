@@ -75,6 +75,10 @@ export function NotificationBell() {
     enabled: isOpen,
   });
 
+  const visibleNotifications = notifications.filter(
+    (notification) => notification.status !== "dismissed" && notification.status !== "archived",
+  );
+
   // Mark as read mutation
   const markAsReadMutation = useMutation({
     mutationFn: async (notificationId: number) => {
@@ -91,9 +95,13 @@ export function NotificationBell() {
     mutationFn: async (notificationId: number) => {
       return apiRequest("PATCH", `/api/notifications/${notificationId}/dismiss`);
     },
-    onSuccess: () => {
+    onSuccess: (_data, notificationId) => {
       queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
       queryClient.invalidateQueries({ queryKey: ["/api/notifications/unread-count"] });
+      queryClient.setQueryData<Notification[]>(
+        ["/api/notifications"],
+        (prev) => prev?.filter((n) => n.id !== notificationId) ?? prev,
+      );
       toast({
         title: "Notification dismissed",
         description: "The notification has been dismissed successfully.",
@@ -222,7 +230,7 @@ export function NotificationBell() {
               <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mx-auto mb-2"></div>
               Loading notifications...
             </div>
-          ) : notifications.length === 0 ? (
+          ) : visibleNotifications.length === 0 ? (
             <div className="p-8 text-center text-gray-500">
               <Bell className="h-12 w-12 mx-auto mb-4 text-gray-300" />
               <p className="font-medium">No notifications</p>
@@ -230,7 +238,7 @@ export function NotificationBell() {
             </div>
           ) : (
             <div className="divide-y">
-              {notifications.map((notification: Notification) => (
+              {visibleNotifications.map((notification: Notification) => (
                 <div
                   key={notification.id}
                   className={`p-4 hover:bg-gray-50 cursor-pointer transition-colors relative ${
@@ -302,7 +310,7 @@ export function NotificationBell() {
           )}
         </ScrollArea>
 
-        {notifications.length > 0 && (
+        {visibleNotifications.length > 0 && (
           <div className="p-3 border-t bg-gray-50">
             <Button 
               variant="ghost" 

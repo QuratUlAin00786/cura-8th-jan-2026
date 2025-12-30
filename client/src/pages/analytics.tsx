@@ -200,10 +200,10 @@ export default function AnalyticsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-full-width">
       <Header title="Analytics Dashboard" subtitle="Comprehensive insights into practice performance" />
       
-      <div className="container mx-auto px-4 lg:px-6 py-6 max-w-7xl">
+      <div className="w-full px-4 lg:px-6 py-6">
         {/* Action Buttons */}
         <div className="flex flex-wrap items-center justify-end gap-3 mb-6">
           <Dialog open={isFilterOpen} onOpenChange={setIsFilterOpen}>

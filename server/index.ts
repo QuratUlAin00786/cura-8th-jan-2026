@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
+import cors from "cors";
 import { registerRoutes } from "./routes";
 import { registerSaaSRoutes } from "./saas-routes";
 import { setupVite, serveStatic, log } from "./vite";
@@ -12,6 +13,19 @@ console.log("  - NODE_ENV:", process.env.NODE_ENV);
 console.log("  - DATABASE_URL exists:", !!process.env.DATABASE_URL);
 
 const app = express();
+app.use(
+  cors({
+    origin: process.env.VITE_API_URL || "http://localhost:1100",
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization",
+      "X-Tenant-Subdomain",
+      "X-CSRF-Token",
+    ],
+    credentials: true,
+  }),
+);
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: false, limit: '50mb' }));
 

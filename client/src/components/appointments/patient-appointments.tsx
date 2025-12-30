@@ -118,6 +118,79 @@ export default function PatientAppointments({
     },
   });
 
+  const { data: treatmentsList = [] } = useQuery({
+    queryKey: ["/api/pricing/treatments"],
+    staleTime: 300000,
+    enabled: !!user,
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/pricing/treatments");
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    },
+  });
+
+  const { data: consultationServices = [] } = useQuery({
+    queryKey: ["/api/pricing/doctors-fees"],
+    staleTime: 300000,
+    enabled: !!user,
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/pricing/doctors-fees");
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    },
+  });
+
+  const treatmentsMap = React.useMemo(() => {
+    const map = new Map<number, any>();
+    treatmentsList.forEach((treatment: any) => {
+      if (treatment?.id) {
+        map.set(treatment.id, treatment);
+      }
+    });
+    return map;
+  }, [treatmentsList]);
+
+  const consultationMap = React.useMemo(() => {
+    const map = new Map<number, any>();
+    consultationServices.forEach((service: any) => {
+      if (service?.id) {
+        map.set(service.id, service);
+      }
+    });
+    return map;
+  }, [consultationServices]);
+
+  const getAppointmentServiceInfo = (appointment: any) => {
+    if (!appointment) return null;
+    const treatmentId = appointment.treatmentId ?? appointment.treatment_id;
+    const consultationId = appointment.consultationId ?? appointment.consultation_id;
+    const type = appointment.appointmentType || appointment.type;
+    if (treatmentId) {
+      const treatment = treatmentsMap.get(treatmentId);
+      return {
+        name: treatment?.name || "Treatment",
+        color: treatment?.colorCode || "#10B981",
+        type: type || "treatment",
+      };
+    }
+    if (consultationId) {
+      const service = consultationMap.get(consultationId);
+      return {
+        name: service?.serviceName || "Consultation",
+        color: service?.colorCode || "#6366F1",
+        type: type || "consultation",
+      };
+    }
+    if (type) {
+      return {
+        name: type.charAt(0).toUpperCase() + type.slice(1),
+        color: "#6B7280",
+        type,
+      };
+    }
+    return null;
+  };
+
   // Fetch doctors for doctor specialty data (faster than medical-staff)
   const { data: doctorsData, isLoading: doctorsLoading } = useQuery({
     queryKey: ["/api/doctors"],
@@ -154,7 +227,12 @@ export default function PatientAppointments({
   });
 
   // Combined loading state
-  const isLoading = patientsLoading || appointmentsLoading || doctorsLoading || usersLoading || rolesLoading;
+  const isLoading =
+    patientsLoading ||
+    appointmentsLoading ||
+    doctorsLoading ||
+    usersLoading ||
+    rolesLoading;
 
   // Find the patient record for the logged-in user
   const currentPatient = React.useMemo(() => {
@@ -914,6 +992,7 @@ export default function PatientAppointments({
             const appointmentDate = new Date(appointment.scheduledAt);
             const isUpcoming =
               isFuture(appointmentDate) || isToday(appointmentDate);
+            const serviceInfo = getAppointmentServiceInfo(appointment);
 
             return (
               <Card
@@ -938,7 +1017,7 @@ export default function PatientAppointments({
                       </Badge>
                     </div>
                   )}
-                  <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between">
                     <div className="space-y-3 flex-1">
                       <div className="flex items-center justify-between">
                         <h3 className="text-lg font-semibold">
@@ -1077,6 +1156,27 @@ export default function PatientAppointments({
                         <p className="text-sm text-gray-600 bg-gray-50 p-3 rounded">
                           {appointment.description}
                         </p>
+                      )}
+
+                      {serviceInfo && (
+                        <>
+                          <div className="flex items-center space-x-2 mt-2">
+                            <span
+                              className="inline-flex h-2 w-2 rounded-full border border-gray-300"
+                              style={{ backgroundColor: serviceInfo.color }}
+                            />
+                            <span className="text-sm font-medium">
+                              Service: {serviceInfo.name}
+                            </span>
+                          </div>
+                          <div className="text-xs text-gray-500">
+                            Appointment Type:{" "}
+                            {(serviceInfo.type || "consultation")
+                              .toString()
+                              .replace(/_/g, " ")
+                              .replace(/\b\w/g, (char: string) => char.toUpperCase())}
+                          </div>
+                        </>
                       )}
 
                       {appointment.createdBy && getCreatorName(appointment.createdBy) && (

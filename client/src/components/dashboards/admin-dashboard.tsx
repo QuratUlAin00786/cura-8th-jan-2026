@@ -1,13 +1,15 @@
 import React from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { useQuery } from "@tanstack/react-query";
-import { Users, Calendar, Brain, CreditCard, Settings, UserCog, Crown, BarChart3, Plus, UserPlus, ClipboardPlus, Pill } from "lucide-react";
+import { useQuery, useMutation } from "@tanstack/react-query";
+import { Users, Calendar, Brain, CreditCard, Settings, UserCog, Crown, BarChart3, Plus, UserPlus, ClipboardPlus, Pill, Trash2 } from "lucide-react";
 import { Link, useLocation } from "wouter";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import AppointmentCalendar from "../calendar/appointment-calendar";
 import { AiInsightsPanel } from "../dashboard/ai-insights-panel";
 import { useAuth } from "@/hooks/use-auth";
+import { apiRequest, queryClient } from "@/lib/queryClient";
+import { toast } from "@/hooks/use-toast";
 
 // Helper function to get the correct tenant subdomain
 function getTenantSubdomain(): string {
@@ -123,6 +125,53 @@ function RecentPatientsList() {
 export function AdminDashboard() {
   const [, setLocation] = useLocation();
   const { user } = useAuth();
+  const rolesQuery = useQuery({
+    queryKey: ["/api/roles"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/roles");
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    },
+  });
+
+  const roles = rolesQuery.data ?? [];
+
+  const deleteRoleMutation = useMutation({
+    mutationFn: async (roleId: number) => {
+      await apiRequest("DELETE", `/api/roles/${roleId}`);
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/roles"] });
+      toast({
+        title: "Role deleted",
+        description: "Role removed successfully.",
+      });
+    },
+    onError: (error: any) => {
+      toast({
+        title: "Error",
+        description: error.message || "Failed to delete role",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleDeleteRole = (roleId: number, displayName: string) => {
+    if (user?.role !== "admin") {
+      toast({
+        title: "Permission denied",
+        description: "Only admins can delete roles.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (!window.confirm(`Delete "${displayName}"? This cannot be undone.`)) {
+      return;
+    }
+
+    deleteRoleMutation.mutate(roleId);
+  };
   const { data: stats, isLoading, error } = useQuery({
     queryKey: ["/api/dashboard/stats"],
     queryFn: async () => {
@@ -418,6 +467,49 @@ export function AdminDashboard() {
           </Card>
         </div>
       </div>
+
+      {/* System Roles preview */}
+      <Card>
+        <CardHeader className="flex items-center justify-between">
+          <CardTitle className="text-lg font-semibold">System Roles</CardTitle>
+          <Link href="/user-management?tab=roles">
+            <Button size="sm" variant="ghost" className="gap-1">
+              View Roles
+              <Users className="h-4 w-4" />
+            </Button>
+          </Link>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {rolesQuery.isLoading ? (
+            <div className="text-sm text-gray-500">Loading roles...</div>
+          ) : (
+            roles.slice(0, 4).map((role: any) => (
+              <div key={role.id} className="flex items-center justify-between gap-3 border rounded-lg p-3">
+                <div>
+                  <p className="font-semibold text-gray-900">{role.displayName}</p>
+                  <p className="text-xs text-gray-500">{role.description}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <Badge variant={role.isSystem ? "secondary" : "default"}>
+                    {role.isSystem ? "System" : "Custom"}
+                  </Badge>
+                  {!role.isSystem && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="text-red-600 hover:text-red-700"
+                      onClick={() => handleDeleteRole(role.id, role.displayName)}
+                      data-testid={`admin-delete-role-${role.id}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  )}
+                </div>
+              </div>
+            ))
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

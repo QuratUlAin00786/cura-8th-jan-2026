@@ -352,26 +352,26 @@ export default function Settings() {
 
   if (isLoading) {
     return (
-      <>
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-full-width">
         <Header 
           title="Settings" 
           subtitle="Configure your organization settings and preferences."
         />
-        <div className="flex-1 flex items-center justify-center">
+        <div className="w-full px-4 sm:px-6 lg:px-8 py-6 flex-1 flex items-center justify-center">
           <LoadingSpinner size="lg" />
         </div>
-      </>
+      </div>
     );
   }
 
   if (error) {
     return (
-      <>
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-full-width">
         <Header 
           title="Settings" 
           subtitle="Configure your organization settings and preferences."
         />
-        <div className="flex-1 overflow-auto p-6">
+        <div className="w-full flex-1 overflow-auto p-6">
           <Card>
             <CardContent className="text-center py-8">
               <p className="text-neutral-600 dark:text-gray-400 mb-4">
@@ -388,19 +388,19 @@ export default function Settings() {
             </CardContent>
           </Card>
         </div>
-      </>
+      </div>
     );
   }
 
   return (
-    <>
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-full-width">
       <Header 
         title="Settings" 
         subtitle="Configure your organization settings and preferences."
       />
       
-      <div className="flex-1 overflow-auto p-6">
-        <div className="max-w-6xl mx-auto">
+      <div className="w-full flex-1 overflow-auto px-4 lg:px-6 py-6 space-y-6">
+        <div className="space-y-6">
           {user?.role === "patient" ? (
             <div className="space-y-6">
               <MyProfileContent user={user} />
@@ -801,7 +801,7 @@ export default function Settings() {
           )}
         </div>
       </div>
-    </>
+    </div>
   );
 }
 

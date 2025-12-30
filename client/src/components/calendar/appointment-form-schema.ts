@@ -20,7 +20,11 @@ export const appointmentSchema = z.object({
   type: z.string().trim().min(1, "Appointment type is required"),
   department: z.string().trim().min(1, "Department is required"),
   location: z.string().trim().optional(),
-  isVirtual: z.boolean()
+  isVirtual: z.boolean(),
+  appointmentType: z.enum(["consultation", "treatment"]).default("consultation"),
+  treatmentId: z.string().optional(),
+  consultationId: z.string().optional(),
+  providerRole: z.string().optional()
 });
 
 export type AppointmentFormData = z.infer<typeof appointmentSchema>;

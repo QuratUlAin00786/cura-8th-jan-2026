@@ -275,6 +275,7 @@ const patientSchema = z.object({
   ),
   nhsNumber: z.string().trim().optional(),
   address: z.object({
+    building: z.string().trim().optional(),
     street: z.string().trim().min(1, "Street address is required"),
     city: z.string().trim().min(1, "City is required"),
     postcode: z.string().trim().min(1, "Postcode is required"),
@@ -340,6 +341,19 @@ export function PatientModal({ open, onOpenChange, editMode = false, editPatient
   
   // Postcode lookup message state
   const [postcodeLookupMessage, setPostcodeLookupMessage] = useState("");
+  const [lookupAddresses, setLookupAddresses] = useState<string[]>([]);
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [allowManualAddress, setAllowManualAddress] = useState(true);
+  const [selectedLookupString, setSelectedLookupString] = useState<string | null>(null);
+  const [selectedAddressDetails, setSelectedAddressDetails] = useState<{
+    street: string;
+    city: string;
+    postcode: string;
+    building: string;
+    district?: string;
+    county?: string;
+    country?: string;
+  } | null>(null);
 
   // Function to calculate age from date of birth
   const calculateAge = (dateOfBirth: string): string => {
@@ -442,6 +456,15 @@ export function PatientModal({ open, onOpenChange, editMode = false, editPatient
       }
     }
   });
+  const selectedCountry = form.watch("address.country");
+  useEffect(() => {
+    if (selectedCountry !== "United Kingdom") {
+      setAllowManualAddress(true);
+      setLookupAddresses([]);
+      setSelectedLookupString(null);
+      setPostcodeLookupMessage("");
+    }
+  }, [selectedCountry]);
 
   // Watch for changes in date of birth to calculate age
   const watchedDateOfBirth = form.watch("dateOfBirth");
@@ -656,112 +679,123 @@ export function PatientModal({ open, onOpenChange, editMode = false, editPatient
     form.reset();
     setShowAiInsights(false);
     setAddressSuggestions([]);
+    setSelectedAddressDetails(null);
+  };
+
+  const applySelectedAddress = async (selection: string) => {
+    const cleanedPostcode = selection.split(",").pop()?.trim() || form.getValues("address.postcode");
+    setLookupLoading(true);
+    try {
+      const response = await fetch(`https://api.postcodes.io/postcodes/${cleanedPostcode}`);
+      if (!response.ok) {
+        throw new Error("Unable to fetch address details");
+      }
+      const data = await response.json();
+      if (!data.result) throw new Error("Royal Mail returned no results");
+      const result = data.result;
+      const sanitizeText = (text?: string) => text?.trim() || "";
+      const postalCodePattern = result.postcode
+        ? new RegExp(result.postcode.replace(/\s+/g, ""), "gi")
+        : null;
+
+      const streetParts = [
+        sanitizeText(result.line_1),
+        sanitizeText(result.line_2),
+        sanitizeText(result.thoroughfare),
+        sanitizeText(result.dependent_locality),
+        sanitizeText(result.parish),
+      ]
+        .filter(Boolean)
+        .map((part) => part.trim());
+
+      let streetAddress = streetParts.length ? streetParts.join(", ") : selection;
+      if (postalCodePattern && postalCodePattern.test(streetAddress.replace(/\s+/g, ""))) {
+        streetAddress = streetAddress.replace(postalCodePattern, "").trim();
+      }
+      if (!streetAddress) {
+        streetAddress = selection.replace(result.postcode || "", "").replace(/,+$/, "").trim();
+      }
+
+      form.setValue("address.street", streetAddress);
+      form.setValue("address.city", result.post_town || result.admin_district || result.region || "");
+      form.setValue("address.postcode", result.postcode || cleanedPostcode);
+      form.setValue("address.country", "United Kingdom");
+      form.setValue(
+        "address.building",
+        result.premise || result.building_name || result.admin_ward || result.line_1 || form.getValues("address.building")
+      );
+      setSelectedLookupString(selection);
+      setLookupAddresses([]);
+      const adminWard = result.admin_ward || result.admin_district || result.region;
+      const buildingName = result.premise || result.building_name || adminWard || result.line_1 || "";
+      setSelectedAddressDetails({
+        street: streetAddress,
+        city: result.post_town || result.admin_district || result.region || "",
+        postcode: result.postcode || cleanedPostcode,
+        building: buildingName,
+        district: result.admin_district || result.admin_ward || result.region,
+        county: result.admin_county || result.region,
+        country: result.country || "United Kingdom",
+      });
+      setPostcodeLookupMessage("Royal Mail address populated.");
+      setAllowManualAddress(false);
+    } catch (error) {
+      console.error("Royal Mail detail error:", error);
+      setPostcodeLookupMessage("Could not retrieve the full address. You can enter it manually.");
+      setAllowManualAddress(true);
+      setSelectedAddressDetails(null);
+    } finally {
+      setLookupLoading(false);
+    }
   };
 
   const handlePostcodeLookup = async (postcode: string) => {
-    if (!postcode || postcode.trim().length < 3) return;
-    
+    if (!postcode || postcode.trim().length < 3) {
+      setPostcodeLookupMessage("Enter a valid postcode before lookup.");
+      setAllowManualAddress(true);
+      return;
+    }
+
     const selectedCountry = form.getValues('address.country');
-    
-    // Country code mapping for Zippopotam API
-    const countryCodeMap: Record<string, string> = {
-      'United Kingdom': 'gb',
-      'United States': 'us',
-      'Canada': 'ca',
-      'Australia': 'au',
-      'Ireland': 'ie',
-      'France': 'fr',
-      'Germany': 'de',
-      'Spain': 'es',
-      'Italy': 'it',
-      'Netherlands': 'nl',
-      'Belgium': 'be',
-      'Switzerland': 'ch',
-      'Austria': 'at',
-      'Portugal': 'pt',
-      'Poland': 'pl',
-      'Sweden': 'se',
-      'Norway': 'no',
-      'Denmark': 'dk',
-      'Finland': 'fi',
-      'Greece': 'gr',
-      'Czech Republic': 'cz',
-      'Hungary': 'hu',
-      'Romania': 'ro',
-      'Bulgaria': 'bg',
-      'Croatia': 'hr',
-      'Slovakia': 'sk',
-      'Slovenia': 'si',
-      'Lithuania': 'lt',
-      'Latvia': 'lv',
-      'Estonia': 'ee',
-      'India': 'in',
-      'Japan': 'jp',
-      'South Korea': 'kr',
-      'Mexico': 'mx',
-      'Brazil': 'br',
-      'Argentina': 'ar',
-      'Turkey': 'tr',
-      'South Africa': 'za',
-      'New Zealand': 'nz'
-    };
+    if (selectedCountry !== "United Kingdom") {
+      setPostcodeLookupMessage("Royal Mail lookup is only available for United Kingdom addresses.");
+      setAllowManualAddress(true);
+      return;
+    }
+
+    setLookupLoading(true);
+    setPostcodeLookupMessage("Looking up addresses via Royal Mail...");
+      setLookupAddresses([]);
+      setSelectedLookupString(null);
+      setSelectedAddressDetails(null);
 
     try {
-      const cleanedPostcode = postcode.trim().replace(/\s+/g, '');
-      let response;
-      let data;
+      const cleanedPostcode = postcode.trim().replace(/\s+/g, "");
+      const response = await fetch(`https://api.postcodes.io/postcodes/${cleanedPostcode}/autocomplete`);
+      if (!response.ok) {
+        throw new Error("No addresses found");
+      }
 
-      // Use UK-specific API for United Kingdom
-      if (selectedCountry === 'United Kingdom') {
-        response = await fetch(`https://api.postcodes.io/postcodes/${cleanedPostcode}`);
-        
-        if (!response.ok) {
-          setPostcodeLookupMessage(`Please check the UK postcode and try again.`);
-          return;
-        }
+      const data = await response.json();
+      const results: string[] = data.result ?? [];
+      if (results.length === 0) {
+        throw new Error("No addresses returned");
+      }
 
-        data = await response.json();
-        
-        if (data.status === 200 && data.result) {
-          const result = data.result;
-          const city = result.admin_district || result.region || '';
-          
-          form.setValue('address.city', city);
-          setPostcodeLookupMessage(`Found: ${city}, United Kingdom`);
-        }
-      } else {
-        // Use Zippopotam API for other countries
-        const countryCode = countryCodeMap[selectedCountry];
-        
-        if (!countryCode) {
-          setPostcodeLookupMessage(`Please select a country first, or enter address details manually.`);
-          return;
-        }
-
-        response = await fetch(`https://api.zippopotam.us/${countryCode}/${cleanedPostcode}`);
-        
-        if (!response.ok) {
-          setPostcodeLookupMessage(`No location found for postal code ${postcode} in ${selectedCountry}.`);
-          return;
-        }
-
-        data = await response.json();
-        
-        if (data.places && data.places.length > 0) {
-          const place = data.places[0];
-          const city = place['place name'] || '';
-          const state = place['state'] || '';
-          
-          // Auto-fill city field with state (e.g., "Toronto, Ontario")
-          form.setValue('address.city', state ? `${city}, ${state}` : city);
-          setPostcodeLookupMessage(state 
-            ? `Found: ${city}, ${state}, ${selectedCountry}`
-            : `Found: ${city}, ${selectedCountry}`);
-        }
+      setLookupAddresses(results);
+      setPostcodeLookupMessage(`${results.length} addresses returned. Select the precise Royal Mail address.`);
+      setAllowManualAddress(false);
+      if (results.length === 1) {
+        await applySelectedAddress(results[0]);
       }
     } catch (error) {
-      console.error('Postcode lookup error:', error);
-      setPostcodeLookupMessage(`Could not connect to postal code service. Please enter manually.`);
+      console.error("Lookup error:", error);
+      setPostcodeLookupMessage(
+        "Unable to fetch addresses. You can enter the address manually or try again."
+      );
+      setAllowManualAddress(true);
+    } finally {
+      setLookupLoading(false);
     }
   };
 
@@ -1062,26 +1096,90 @@ export function PatientModal({ open, onOpenChange, editMode = false, editPatient
                                 {...field} 
                                 placeholder="Enter postal code"
                                 data-testid="input-postcode"
-                                onChange={(e) => {
-                                  field.onChange(e);
-                                  handlePostcodeLookup(e.target.value);
-                                }}
                               />
                               <Button 
                                 type="button" 
                                 variant="outline" 
                                 size="sm"
                                 onClick={() => handlePostcodeLookup(field.value)}
-                                disabled={!field.value || field.value.length < 3}
+                                disabled={!field.value || field.value.length < 3 || lookupLoading}
                                 data-testid="button-lookup-postcode"
                               >
-                                Lookup
+                                {lookupLoading ? "Looking up..." : "Lookup"}
                               </Button>
                             </div>
                           </FormControl>
                           <p className="text-xs text-muted-foreground mt-1">
-                            Works for 35+ countries - automatically fills city/town
+                            When collecting UK addresses, use Royal Mail lookup. Provide postcode (and optional building) to fetch formatted addresses.
                           </p>
+                          {lookupAddresses.length > 0 && (
+                            <div className="space-y-2 mt-2 rounded-lg bg-slate-50 p-3 text-sm text-slate-700 border border-dashed border-slate-200 max-h-48 overflow-y-auto">
+                              <p className="text-xs font-semibold text-slate-500">Select the matching Royal Mail address:</p>
+                              {lookupAddresses.map((addr) => (
+                                <button
+                                  key={addr}
+                                  type="button"
+                                  className="w-full rounded-md border border-transparent bg-white px-3 py-2 text-left text-sm hover:bg-blue-50"
+                                  onClick={() => applySelectedAddress(addr)}
+                                >
+                                  {addr}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                          {postcodeLookupMessage && !selectedAddressDetails && (
+                            <p className={`text-xs mt-2 ${allowManualAddress ? "text-amber-600" : "text-green-600"}`}>
+                              {postcodeLookupMessage}
+                            </p>
+                          )}
+                          {!allowManualAddress && selectedLookupString && selectedAddressDetails && (
+                            <div className="mt-3 rounded-lg border border-dashed border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900 space-y-1">
+                              <p className="font-semibold text-emerald-800">Royal Mail address</p>
+                              {selectedAddressDetails.street && selectedAddressDetails.street.trim() !== "" && (() => {
+                                const normalizedStreet = selectedAddressDetails.street.replace(/\s+/g, "").toLowerCase();
+                                const normalizedPostcode = (selectedAddressDetails.postcode || "").replace(/\s+/g, "").toLowerCase();
+                                if (normalizedStreet && normalizedStreet !== normalizedPostcode) {
+                                  return <p>{selectedAddressDetails.street}</p>;
+                                }
+                                return null;
+                              })()}
+                              <p>
+                                {selectedAddressDetails.city} • {selectedAddressDetails.postcode}
+                              </p>
+                              {selectedAddressDetails.county && (
+                                <p className="text-xs text-emerald-700">
+                                  County: {selectedAddressDetails.county}
+                                </p>
+                              )}
+                              {selectedAddressDetails.country && (
+                                <p className="text-xs text-emerald-700">
+                                  Country: {selectedAddressDetails.country}
+                                </p>
+                              )}
+                              {selectedAddressDetails.building && (
+                                <p className="text-xs text-emerald-700">
+                                  Building: {selectedAddressDetails.building}
+                                </p>
+                              )}
+                            </div>
+                          )}
+                          <FormMessage />
+                        </FormItem>
+                      )}
+                    />
+                    <FormField
+                      control={form.control}
+                      name="address.building"
+                      render={({ field }) => (
+                        <FormItem>
+                          <FormLabel>Building Number / Name (optional)</FormLabel>
+                          <FormControl>
+                            <Input
+                              {...field}
+                              placeholder="Optional building number or name"
+                              disabled={!allowManualAddress}
+                            />
+                          </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}
@@ -1094,7 +1192,11 @@ export function PatientModal({ open, onOpenChange, editMode = false, editPatient
                         <FormItem className="md:col-span-2">
                           <FormLabel>Street Address</FormLabel>
                           <FormControl>
-                            <Input {...field} placeholder="Enter street address" data-testid="input-street" />
+                            <Input 
+                              {...field} 
+                              placeholder="Enter street address" 
+                              data-testid="input-street" 
+                            />
                           </FormControl>
                           {postcodeLookupMessage && (
                             <p className="text-sm text-green-600 dark:text-green-400 mt-1">
@@ -1113,7 +1215,11 @@ export function PatientModal({ open, onOpenChange, editMode = false, editPatient
                         <FormItem>
                           <FormLabel>City/Town</FormLabel>
                           <FormControl>
-                            <Input {...field} placeholder="Auto-filled or enter manually" data-testid="input-city" />
+                            <Input 
+                              {...field} 
+                              placeholder="Auto-filled or enter manually" 
+                              data-testid="input-city" 
+                            />
                           </FormControl>
                           <FormMessage />
                         </FormItem>

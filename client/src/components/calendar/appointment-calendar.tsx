@@ -13,9 +13,7 @@ import { Check, ChevronsUpDown, AlertTriangle, CreditCard, Loader2 } from "lucid
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Calendar as CalendarComponent } from "@/components/ui/calendar";
 import { Calendar, Clock, MapPin, User, Users, Video, Stethoscope, FileText, Plus, Save, X, Mic, Square, Edit, Trash2 } from "lucide-react";
-import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isToday } from "date-fns";
-import { Elements, PaymentElement, useStripe, useElements } from "@stripe/react-stripe-js";
-import { loadStripe } from "@stripe/stripe-js";
+import { format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay, isToday, startOfWeek, endOfWeek } from "date-fns";
 
 const anatomicalDiagramImage = "/anatomical-diagram-clean.svg";
 const facialDiagramImage = "/clean-facial-diagram.png";
@@ -23,119 +21,6 @@ import { useToast } from "@/hooks/use-toast";
 import { useQuery } from "@tanstack/react-query";
 import { apiRequest } from "@/lib/queryClient";
 
-const stripePromise = import.meta.env.VITE_STRIPE_PUBLIC_KEY 
-  ? loadStripe(import.meta.env.VITE_STRIPE_PUBLIC_KEY)
-  : null;
-
-function AppointmentStripePaymentForm({ 
-  invoiceId, 
-  amount, 
-  onSuccess, 
-  onCancel 
-}: { 
-  invoiceId: string; 
-  amount: number; 
-  onSuccess: () => void; 
-  onCancel: () => void; 
-}) {
-  const stripe = useStripe();
-  const elements = useElements();
-  const [isProcessing, setIsProcessing] = useState(false);
-  const { toast } = useToast();
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-
-    if (!stripe || !elements) {
-      return;
-    }
-
-    setIsProcessing(true);
-
-    try {
-      const { error, paymentIntent } = await stripe.confirmPayment({
-        elements,
-        redirect: 'if_required',
-      });
-
-      if (error) {
-        toast({
-          title: "Payment Failed",
-          description: error.message || "An error occurred during payment",
-          variant: "destructive"
-        });
-      } else if (paymentIntent && paymentIntent.status === 'succeeded') {
-        const res = await apiRequest('POST', '/api/billing/process-payment', {
-          invoiceId: invoiceId,
-          paymentIntentId: paymentIntent.id
-        });
-
-        const contentType = res.headers.get('content-type');
-        if (!contentType || !contentType.includes('application/json')) {
-          throw new Error('Invalid response format from server');
-        }
-
-        const result = await res.json();
-        
-        if (result.success) {
-          onSuccess();
-        } else {
-          const errorMessage = result.error || 'Payment processing failed';
-          toast({
-            title: "Payment Failed",
-            description: errorMessage,
-            variant: "destructive"
-          });
-          throw new Error(errorMessage);
-        }
-      }
-    } catch (err) {
-      console.error('Payment error:', err);
-      toast({
-        title: "Payment Failed",
-        description: "An error occurred while processing your payment",
-        variant: "destructive"
-      });
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <div className="bg-white dark:bg-slate-900 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
-        <PaymentElement />
-      </div>
-      
-      <div className="flex gap-3">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={onCancel}
-          disabled={isProcessing}
-          className="flex-1"
-        >
-          Cancel
-        </Button>
-        <Button
-          type="submit"
-          disabled={!stripe || isProcessing}
-          className="flex-1 bg-blue-600 hover:bg-blue-700 text-white"
-          data-testid="button-stripe-pay"
-        >
-          {isProcessing ? (
-            <>
-              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-              Processing...
-            </>
-          ) : (
-            `Pay £${amount.toFixed(2)}`
-          )}
-        </Button>
-      </div>
-    </form>
-  );
-}
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -291,36 +176,91 @@ export default function AppointmentCalendar({ onNewAppointment }: { onNewAppoint
     patientId: "",
     description: "",
   });
+  const [appointmentType, setAppointmentType] = useState<"consultation" | "treatment" | "">("");
+  const [appointmentSelectedTreatment, setAppointmentSelectedTreatment] = useState<any>(null);
+  const [appointmentSelectedConsultation, setAppointmentSelectedConsultation] = useState<any>(null);
+  const [openAppointmentTypeCombo, setOpenAppointmentTypeCombo] = useState(false);
+  const [openTreatmentCombo, setOpenTreatmentCombo] = useState(false);
+  const [openConsultationCombo, setOpenConsultationCombo] = useState(false);
+  const [appointmentTypeError, setAppointmentTypeError] = useState<string>("");
+  const [treatmentSelectionError, setTreatmentSelectionError] = useState<string>("");
+  const [consultationSelectionError, setConsultationSelectionError] = useState<string>("");
+
+  const appointmentServicePreview = useMemo(() => {
+    if (!appointmentType) return null;
+    if (appointmentType === "treatment" && appointmentSelectedTreatment) {
+      return {
+        name: appointmentSelectedTreatment.name,
+        color: appointmentSelectedTreatment.colorCode || "#D1D5DB",
+        price:
+          appointmentSelectedTreatment.currency && appointmentSelectedTreatment.basePrice
+            ? `${appointmentSelectedTreatment.currency} ${appointmentSelectedTreatment.basePrice}`
+            : undefined,
+      };
+    }
+    if (appointmentType === "consultation" && appointmentSelectedConsultation) {
+      return {
+        name: appointmentSelectedConsultation.serviceName,
+        color: appointmentSelectedConsultation.colorCode || "#6366F1",
+        price:
+          appointmentSelectedConsultation.currency && appointmentSelectedConsultation.basePrice
+            ? `${appointmentSelectedConsultation.currency} ${appointmentSelectedConsultation.basePrice}`
+            : undefined,
+      };
+    }
+    return null;
+  }, [appointmentType, appointmentSelectedTreatment, appointmentSelectedConsultation]);
+
+  const resetNewAppointmentForm = () => {
+    setNewAppointmentDate(undefined);
+    setNewSelectedTimeSlot("");
+    setSelectedRole("");
+    setSelectedProviderId("");
+    setSelectedDuration(30);
+    setNewAppointmentData({
+      title: "",
+      type: "consultation",
+      patientId: "",
+      description: "",
+    });
+    setAppointmentType("");
+    setAppointmentSelectedTreatment(null);
+    setAppointmentSelectedConsultation(null);
+    setAppointmentTypeError("");
+    setTreatmentSelectionError("");
+    setConsultationSelectionError("");
+    setPatientError("");
+    setProviderError("");
+  };
+  const resetEditAppointmentForm = () => {
+    setEditingAppointment(null);
+    setEditAppointmentDate(undefined);
+    setEditSelectedTimeSlot("");
+    setEditAppointmentType("");
+    setEditAppointmentSelectedTreatment(null);
+    setEditAppointmentSelectedConsultation(null);
+    setEditAppointmentTypeError("");
+    setEditTreatmentSelectionError("");
+    setEditConsultationSelectionError("");
+  };
+
   // State for edit appointment modal
   const [showEditAppointment, setShowEditAppointment] = useState(false);
   const [editingAppointment, setEditingAppointment] = useState<any>(null);
   const [editAppointmentDate, setEditAppointmentDate] = useState<Date | undefined>(undefined);
   const [editSelectedTimeSlot, setEditSelectedTimeSlot] = useState<string>("");
+  const [editAppointmentType, setEditAppointmentType] = useState<"consultation" | "treatment" | "">("");
+  const [editAppointmentSelectedTreatment, setEditAppointmentSelectedTreatment] = useState<any>(null);
+  const [editAppointmentSelectedConsultation, setEditAppointmentSelectedConsultation] = useState<any>(null);
+  const [openEditAppointmentTypeCombo, setOpenEditAppointmentTypeCombo] = useState(false);
+  const [openEditTreatmentCombo, setOpenEditTreatmentCombo] = useState(false);
+  const [openEditConsultationCombo, setOpenEditConsultationCombo] = useState(false);
+  const [editAppointmentTypeError, setEditAppointmentTypeError] = useState<string>("");
+  const [editTreatmentSelectionError, setEditTreatmentSelectionError] = useState<string>("");
+  const [editConsultationSelectionError, setEditConsultationSelectionError] = useState<string>("");
   const [showInsufficientTimeWarning, setShowInsufficientTimeWarning] = useState(false);
   const [insufficientTimeMessage, setInsufficientTimeMessage] = useState<string>("");
   
-  // State for invoice creation workflow
-  const [showInvoiceDialog, setShowInvoiceDialog] = useState(false);
-  const [showInvoiceSummaryDialog, setShowInvoiceSummaryDialog] = useState(false);
-  const [invoiceData, setInvoiceData] = useState<any>({
-    serviceDate: "",
-    doctor: "",
-    invoiceDate: "",
-    dueDate: "",
-    services: [],
-    insuranceProvider: "",
-    totalAmount: "0.00",
-    notes: "",
-    paymentMethod: ""
-  });
-  const [doctorFee, setDoctorFee] = useState<any>(null);
-  
-  // State for Stripe payment
-  const [showStripePaymentDialog, setShowStripePaymentDialog] = useState(false);
-  const [stripeClientSecret, setStripeClientSecret] = useState<string>("");
-  const [pendingInvoiceId, setPendingInvoiceId] = useState<string>("");
-  const [pendingAppointmentDetails, setPendingAppointmentDetails] = useState<any>(null);
-  const [isCreatingPayment, setIsCreatingPayment] = useState(false);
   
   // State for appointment ID filter (admin only)
   const [appointmentIdFilter, setAppointmentIdFilter] = useState<string>("all");
@@ -589,7 +529,11 @@ export default function AppointmentCalendar({ onNewAppointment }: { onNewAppoint
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
-      setCreatedAppointmentDetails(data);
+      const finalAppointmentType = data.appointmentType || appointmentType || "consultation";
+      setCreatedAppointmentDetails({
+        ...data,
+        appointmentType: finalAppointmentType,
+      });
       setShowConfirmationDialog(false);
     },
     onError: (error) => {
@@ -641,31 +585,6 @@ export default function AppointmentCalendar({ onNewAppointment }: { onNewAppoint
       toast({
         title: "Cancellation Failed",
         description: "Failed to cancel the appointment. Please try again.",
-        variant: "destructive",
-      });
-    },
-  });
-
-  // Create invoice mutation
-  const createInvoiceMutation = useMutation({
-    mutationFn: async (data: any) => {
-      const response = await apiRequest("POST", "/api/invoices", data);
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Failed to create invoice");
-      }
-      return response.json();
-    },
-    onSuccess: (data) => {
-      console.log("Invoice created successfully:", data);
-      // Invalidate invoices query to refresh data
-      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
-    },
-    onError: (error) => {
-      console.error("Create invoice error:", error);
-      toast({
-        title: "Invoice Creation Failed",
-        description: error instanceof Error ? error.message : "Failed to create the invoice. Please try again.",
         variant: "destructive",
       });
     },
@@ -723,6 +642,20 @@ export default function AppointmentCalendar({ onNewAppointment }: { onNewAppoint
     console.log('[Edit Appointment] Appointments data refreshed');
     
     setEditingAppointment(appointment);
+    const normalizedAppointmentType = appointment.appointmentType || "consultation";
+    setEditAppointmentType(normalizedAppointmentType);
+    setEditAppointmentSelectedTreatment(
+      treatmentsList.find((treatment: any) => treatment.id === appointment.treatmentId) || null
+    );
+    setEditAppointmentSelectedConsultation(
+      consultationServices.find((service: any) => service.id === appointment.consultationId) || null
+    );
+    setEditAppointmentTypeError("");
+    setEditTreatmentSelectionError("");
+    setEditConsultationSelectionError("");
+    setOpenEditAppointmentTypeCombo(false);
+    setOpenEditTreatmentCombo(false);
+    setOpenEditConsultationCombo(false);
     
     // *** FIX: Parse ISO string without timezone conversion ***
     // Extract date and time components directly from ISO string
@@ -1004,6 +937,95 @@ Medical License: [License Number]
       }
     },
   });
+
+  const { data: treatmentsList = [], isLoading: isTreatmentsLoading } = useQuery({
+    queryKey: ["/api/pricing/treatments"],
+    enabled: showNewAppointment || user?.role === "admin",
+    staleTime: 60000,
+    queryFn: async () => {
+      try {
+        const response = await apiRequest("GET", "/api/pricing/treatments");
+        const data = await response.json();
+        return Array.isArray(data) ? data : [];
+      } catch (error) {
+        console.error("Treatments fetch error:", error);
+        return [];
+      }
+    },
+  });
+
+  const { data: consultationServices = [], isLoading: isConsultationsLoading } = useQuery({
+    queryKey: ["/api/pricing/doctors-fees"],
+    enabled: showNewAppointment || user?.role === "admin",
+    staleTime: 60000,
+    queryFn: async () => {
+      try {
+        const response = await apiRequest("GET", "/api/pricing/doctors-fees");
+        const data = await response.json();
+        return Array.isArray(data) ? data : [];
+      } catch (error) {
+        console.error("Consultation services fetch error:", error);
+        return [];
+      }
+    },
+  });
+
+  const treatmentsMap = useMemo(() => {
+    const map = new Map<number, { color: string; name: string }>();
+    treatmentsList.forEach((treatment: any) => {
+      if (treatment?.id) {
+        map.set(treatment.id, {
+          color: treatment.colorCode || "#D1D5DB",
+          name: treatment.name || "Treatment",
+        });
+      }
+    });
+    return map;
+  }, [treatmentsList]);
+
+  const consultationMap = useMemo(() => {
+    const map = new Map<number, { name: string; color: string }>();
+    consultationServices.forEach((service: any) => {
+      if (service?.id) {
+        map.set(service.id, {
+          name: service.serviceName || "Consultation",
+          color: service.colorCode || "#6366F1",
+        });
+      }
+    });
+    return map;
+  }, [consultationServices]);
+
+  useEffect(() => {
+    if (!editingAppointment) return;
+    if (
+      editAppointmentType === "treatment" &&
+      editingAppointment.treatmentId &&
+      !editAppointmentSelectedTreatment
+    ) {
+      const match = treatmentsList.find((treatment: any) => treatment.id === editingAppointment.treatmentId);
+      if (match) {
+        setEditAppointmentSelectedTreatment(match);
+      }
+    }
+    if (
+      editAppointmentType === "consultation" &&
+      editingAppointment.consultationId &&
+      !editAppointmentSelectedConsultation
+    ) {
+      const match = consultationServices.find((service: any) => service.id === editingAppointment.consultationId);
+      if (match) {
+        setEditAppointmentSelectedConsultation(match);
+      }
+    }
+  }, [
+    editingAppointment,
+    editAppointmentType,
+    treatmentsList,
+    consultationServices,
+    editAppointmentSelectedTreatment,
+    editAppointmentSelectedConsultation,
+  ]);
 
   // Fetch all shifts for the selected provider to determine available dates
   const { data: allProviderShifts } = useQuery({
@@ -1424,7 +1446,9 @@ Medical License: [License Number]
   // Data processing complete
   const monthStart = startOfMonth(selectedDate);
   const monthEnd = endOfMonth(selectedDate);
-  const calendarDays = eachDayOfInterval({ start: monthStart, end: monthEnd });
+  const calendarStart = startOfWeek(monthStart, { weekStartsOn: 1 });
+  const calendarEnd = endOfWeek(monthEnd, { weekStartsOn: 1 });
+  const calendarDays = eachDayOfInterval({ start: calendarStart, end: calendarEnd });
 
   const getAppointmentsForDate = (date: Date) => {
     return appointments.filter((apt: any) => {
@@ -1434,6 +1458,34 @@ Medical License: [License Number]
       const result = aptDateString === selectedDateString;
       return result;
     });
+  };
+
+  const getAppointmentDotColor = (appointment: any) => {
+    if (appointment?.appointmentType === "treatment" && appointment?.treatmentId) {
+      const treatment = treatmentsMap.get(appointment.treatmentId);
+      if (treatment?.color) return treatment.color;
+    }
+
+    return statusBgColors[appointment?.status as keyof typeof statusBgColors] || statusBgColors.scheduled;
+  };
+
+  const getAppointmentServiceInfo = (appointment: any) => {
+    if (!appointment) return null;
+    if (appointment.appointmentType === "treatment" && appointment.treatmentId) {
+      const treatment = treatmentsMap.get(appointment.treatmentId);
+      if (treatment) {
+        return { label: treatment.name, color: treatment.color };
+      }
+      return { label: "Treatment", color: "#10B981" };
+    }
+    if (appointment.appointmentType === "consultation" && appointment.consultationId) {
+      const consultation = consultationMap.get(appointment.consultationId);
+      if (consultation) {
+        return { label: consultation.name, color: consultation.color };
+      }
+      return { label: "Consultation", color: "#6366F1" };
+    }
+    return null;
   };
 
   const selectedDateAppointments = getAppointmentsForDate(selectedDate).filter((apt: any) => {
@@ -1520,7 +1572,7 @@ Medical License: [License Number]
       <Card>
         <CardContent className="p-6">
           <div className="grid grid-cols-7 gap-4 mb-4">
-            {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => (
+            {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day) => (
               <div key={day} className="text-center font-semibold text-gray-600 dark:text-gray-300 py-2">
                 {day}
               </div>
@@ -1553,7 +1605,7 @@ Medical License: [License Number]
                         key={appointment.id}
                         className="w-3 h-3 rounded-full cursor-pointer border border-white shadow-sm"
                         style={{
-                          backgroundColor: statusBgColors[appointment.status as keyof typeof statusBgColors] || statusBgColors.scheduled
+                          backgroundColor: getAppointmentDotColor(appointment)
                         }}
                         onClick={(e) => {
                           e.stopPropagation();
@@ -1589,122 +1641,135 @@ Medical License: [License Number]
             <p className="text-gray-500 dark:text-gray-400 text-center py-8">No appointments scheduled for this date.</p>
           ) : (
             <div className="space-y-3">
-              {selectedDateAppointments.map((appointment: any) => (
-                <div
-                  key={appointment.id}
-                  className="relative flex items-center justify-between p-4 pt-8 border dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800"
-                >
-                  {user?.role === 'admin' && appointment.appointmentId && (
-                    <Badge
-                      className="absolute top-1.5 left-2 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
-                    >
-                      ID: {appointment.appointmentId}
-                    </Badge>
-                  )}
-                  <div 
-                    className="flex items-center space-x-4 flex-1 cursor-pointer"
-                    onClick={() => {
-                      setSelectedAppointment(appointment);
-                      setShowAppointmentDetails(true);
-                    }}
+              {selectedDateAppointments.map((appointment: any) => {
+                const serviceInfo = getAppointmentServiceInfo(appointment);
+                return (
+                  <div
+                    key={appointment.id}
+                    className="relative flex items-center justify-between p-4 pt-8 border dark:border-gray-700 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-800"
+                    onMouseDown={(e) => e.preventDefault()}
                   >
-                    <div className="flex flex-col">
+                    {user?.role === 'admin' && appointment.appointmentId && (
                       <Badge
-                        style={{
-                          backgroundColor: statusBgColors[appointment.status as keyof typeof statusBgColors] || statusBgColors.scheduled,
-                          color: statusColors[appointment.status as keyof typeof statusColors] || statusColors.scheduled
-                        }}
+                        className="absolute top-1.5 left-2 text-xs bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200"
                       >
-                        {appointment.status.replace('_', ' ').toUpperCase()}
+                        ID: {appointment.appointmentId}
                       </Badge>
-                    </div>
-                    <div>
-                      <div className="flex items-center space-x-2">
-                        <Clock className="h-4 w-4 text-gray-400" />
-                        <span className="font-medium">{formatTime(appointment.scheduledAt)}</span>
-                      </div>
-                      <div className="flex items-center space-x-2 mt-1">
-                        <User className="h-4 w-4 text-gray-400" />
-                        <span className="text-sm text-gray-600 dark:text-gray-300">{getPatientName(appointment.patientId)}</span>
-                      </div>
-                      <div className="flex items-center space-x-2 mt-1">
-                        <Clock className="h-4 w-4 text-gray-400" />
-                        <span className="text-sm text-gray-600 dark:text-gray-300">
-                          {appointment.duration || 30} minutes
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="flex items-center space-x-2">
-                    <div className="text-right mr-4">
-                   
-                      <div className="font-medium">Dr. {appointment.providerName}</div>
-                      {user?.role === 'admin' && (() => {
-                        const provider = usersData?.find((u: any) => u.id === appointment.providerId);
-                        return provider && (provider.medicalSpecialtyCategory || provider.subSpecialty || provider.department) ? (
-                          <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                            {provider.medicalSpecialtyCategory && <div>{provider.medicalSpecialtyCategory}</div>}
-                            {provider.subSpecialty && <div>{provider.subSpecialty}</div>}
-                            {!provider.medicalSpecialtyCategory && !provider.subSpecialty && provider.department && <div>{provider.department}</div>}
-                          </div>
-                        ) : null;
-                      })()}
-                      {(() => {
-                        const createdBy = getCreatedByUser(appointment.createdBy);
-                        return createdBy ? (
-                          <div className="text-xs text-gray-400 mt-1">
-                            Created By: {createdBy.name} ({createdBy.role})
-                          </div>
-                        ) : null;
-                      })()}
-                    </div>
-                    {appointment.status !== 'cancelled' && (
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleCancelAppointment(appointment.id);
-                        }}
-                        className="text-red-600 hover:text-red-800 hover:bg-red-50 border-red-300"
-                        data-testid={`cancel-appointment-${appointment.id}`}
-                      >
-                        Cancel Appointment
-                      </Button>
                     )}
-                    <div className="flex items-center space-x-1">
-                      {canEditAppointments() && appointment.status !== 'cancelled' && (
+                    <div 
+                      className="flex items-center space-x-4 flex-1 cursor-pointer"
+                      onClick={() => {
+                        setSelectedAppointment(appointment);
+                        setShowAppointmentDetails(true);
+                      }}
+                    >
+                      <div className="flex flex-col">
+                        <Badge
+                          style={{
+                            backgroundColor: statusBgColors[appointment.status as keyof typeof statusBgColors] || statusBgColors.scheduled,
+                            color: statusColors[appointment.status as keyof typeof statusColors] || statusColors.scheduled
+                          }}
+                        >
+                          {appointment.status.replace('_', ' ').toUpperCase()}
+                        </Badge>
+                      </div>
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <Clock className="h-4 w-4 text-gray-400" />
+                          <span className="font-medium">{formatTime(appointment.scheduledAt)}</span>
+                        </div>
+                        <div className="flex items-center space-x-2 mt-1">
+                          <User className="h-4 w-4 text-gray-400" />
+                          <span className="text-sm text-gray-600 dark:text-gray-300">{getPatientName(appointment.patientId)}</span>
+                        </div>
+                      {serviceInfo && (
+                        <p className="text-xs text-gray-500 mt-1 flex items-center gap-1">
+                          <span
+                            className="inline-flex h-2 w-2 rounded-full"
+                            style={{ backgroundColor: serviceInfo.color }}
+                          />
+                          Service: {serviceInfo.label}
+                        </p>
+                      )}
+                        <div className="flex items-center space-x-2 mt-1">
+                          <Clock className="h-4 w-4 text-gray-400" />
+                          <span className="text-sm text-gray-600 dark:text-gray-300">
+                            {appointment.duration || 30} minutes
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <div className="text-right mr-4">
+                     
+                        <div className="font-medium">Dr. {appointment.providerName}</div>
+                        {user?.role === 'admin' && (() => {
+                          const provider = usersData?.find((u: any) => u.id === appointment.providerId);
+                          return provider && (provider.medicalSpecialtyCategory || provider.subSpecialty || provider.department) ? (
+                            <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                              {provider.medicalSpecialtyCategory && <div>{provider.medicalSpecialtyCategory}</div>}
+                              {provider.subSpecialty && <div>{provider.subSpecialty}</div>}
+                              {!provider.medicalSpecialtyCategory && !provider.subSpecialty && provider.department && <div>{provider.department}</div>}
+                            </div>
+                          ) : null;
+                        })()}
+                        {(() => {
+                          const createdBy = getCreatedByUser(appointment.createdBy);
+                          return createdBy ? (
+                            <div className="text-xs text-gray-400 mt-1">
+                              Created By: {createdBy.name} ({createdBy.role})
+                            </div>
+                          ) : null;
+                        })()}
+                      </div>
+                      {appointment.status !== 'cancelled' && (
                         <Button
-                          variant="ghost"
+                          variant="outline"
                           size="sm"
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleEditAppointment(appointment);
+                            handleCancelAppointment(appointment.id);
                           }}
-                          className="h-8 w-8 p-0 text-blue-600 hover:text-blue-800 hover:bg-blue-50"
-                          data-testid={`edit-appointment-${appointment.id}`}
+                          className="text-red-600 hover:text-red-800 hover:bg-red-50 border-red-300"
+                          data-testid={`cancel-appointment-${appointment.id}`}
                         >
-                          <Edit className="h-4 w-4" />
+                          Cancel Appointment
                         </Button>
                       )}
-                      {canDeleteAppointments() && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteAppointment(appointment.id, appointment.title);
-                          }}
-                          className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
-                          data-testid={`delete-appointment-${appointment.id}`}
-                        >
-                          <Trash2 className="h-4 w-4" />
-                        </Button>
-                      )}
+                      <div className="flex items-center space-x-1">
+                        {canEditAppointments() && appointment.status !== 'cancelled' && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleEditAppointment(appointment);
+                            }}
+                            className="h-8 w-8 p-0 text-blue-600 hover:text-blue-800 hover:bg-blue-50"
+                            data-testid={`edit-appointment-${appointment.id}`}
+                          >
+                            <Edit className="h-4 w-4" />
+                          </Button>
+                        )}
+                        {canDeleteAppointments() && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteAppointment(appointment.id, appointment.title);
+                            }}
+                            className="h-8 w-8 p-0 text-red-600 hover:text-red-800 hover:bg-red-50"
+                            data-testid={`delete-appointment-${appointment.id}`}
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </CardContent>
@@ -2157,6 +2222,202 @@ Medical License: [License Number]
                   </div>
                 </div>
 
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-sm font-medium text-gray-600">Appointment Type</Label>
+                    <Popover open={openAppointmentTypeCombo} onOpenChange={setOpenAppointmentTypeCombo}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          role="combobox"
+                          aria-expanded={openAppointmentTypeCombo}
+                          className="w-full justify-between mt-1"
+                          data-testid="select-appointment-type"
+                        >
+                          {appointmentType
+                            ? appointmentType.charAt(0).toUpperCase() + appointmentType.slice(1)
+                            : "Select an appointment type"}
+                          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-full p-0" align="start">
+                        <Command>
+                          <CommandInput placeholder="Search appointment type..." />
+                          <CommandList>
+                            <CommandEmpty>No type found.</CommandEmpty>
+                            <CommandGroup>
+                              {["consultation", "treatment"].map((type) => (
+                                <CommandItem
+                                  key={type}
+                                  value={type}
+                                  onSelect={(currentValue) => {
+                                    const normalized = currentValue as "consultation" | "treatment";
+                                    setAppointmentType(normalized);
+                                    setAppointmentSelectedTreatment(null);
+                                    setAppointmentSelectedConsultation(null);
+                                    setAppointmentTypeError("");
+                                    setTreatmentSelectionError("");
+                                    setConsultationSelectionError("");
+                                    setOpenAppointmentTypeCombo(false);
+                                  }}
+                                >
+                                  <Check
+                                    className={`mr-2 h-4 w-4 ${
+                                      appointmentType === type ? "opacity-100" : "opacity-0"
+                                    }`}
+                                  />
+                                  {type.charAt(0).toUpperCase() + type.slice(1)}
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                    {appointmentTypeError && (
+                      <p className="text-red-500 text-xs mt-1">{appointmentTypeError}</p>
+                    )}
+                  </div>
+                  <div>
+                    {appointmentType === "treatment" && (
+                      <>
+                        <Label className="text-sm font-medium text-gray-600">Select Treatment</Label>
+                        <Popover open={openTreatmentCombo} onOpenChange={setOpenTreatmentCombo}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              role="combobox"
+                              aria-expanded={openTreatmentCombo}
+                              className="w-full justify-between mt-1"
+                              data-testid="select-treatment"
+                            >
+                              {appointmentSelectedTreatment ? appointmentSelectedTreatment.name : "Select a treatment"}
+                              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-full p-0" align="start">
+                            <Command>
+                              <CommandInput placeholder="Search treatments..." />
+                              <CommandList>
+                                {isTreatmentsLoading && (
+                                  <CommandItem disabled>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Loading treatments...
+                                  </CommandItem>
+                                )}
+                                <CommandEmpty>No treatments found.</CommandEmpty>
+                                <CommandGroup>
+                                  {treatmentsList.map((treatment: any) => (
+                                    <CommandItem
+                                      key={treatment.id}
+                                      value={treatment.id.toString()}
+                                      onSelect={() => {
+                                        setAppointmentSelectedTreatment(treatment);
+                                        setTreatmentSelectionError("");
+                                        setOpenTreatmentCombo(false);
+                                      }}
+                                    >
+                                      <div className="flex items-center gap-2 w-full">
+                                        <span
+                                          className="inline-flex h-3 w-3 rounded-full border border-gray-300"
+                                          style={{ backgroundColor: treatment.colorCode || "#D1D5DB" }}
+                                        />
+                                        <span className="flex-1 text-left">{treatment.name}</span>
+                                        <span className="text-xs text-gray-500">
+                                          {treatment.currency} {treatment.basePrice}
+                                        </span>
+                                      </div>
+                                    </CommandItem>
+                                  ))}
+                                </CommandGroup>
+                              </CommandList>
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
+                        {appointmentSelectedTreatment && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="mt-1 px-0 text-blue-600"
+                            onClick={() => setAppointmentSelectedTreatment(null)}
+                          >
+                            Clear selection
+                          </Button>
+                        )}
+                        {treatmentSelectionError && (
+                          <p className="text-red-500 text-xs mt-1">{treatmentSelectionError}</p>
+                        )}
+                      </>
+                    )}
+                    {appointmentType === "consultation" && (
+                      <>
+                        <Label className="text-sm font-medium text-gray-600">Select Consultation</Label>
+                        <Popover open={openConsultationCombo} onOpenChange={setOpenConsultationCombo}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              role="combobox"
+                              aria-expanded={openConsultationCombo}
+                              className="w-full justify-between mt-1"
+                              data-testid="select-consultation"
+                            >
+                              {appointmentSelectedConsultation ? appointmentSelectedConsultation.serviceName : "Select a consultation"}
+                              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-full p-0" align="start">
+                            <Command>
+                              <CommandInput placeholder="Search consultation..." />
+                              <CommandList>
+                                {isConsultationsLoading && (
+                                  <CommandItem disabled>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Loading consultations...
+                                  </CommandItem>
+                                )}
+                                <CommandEmpty>No consultations found.</CommandEmpty>
+                                <CommandGroup>
+                                  {consultationServices.map((service: any) => (
+                                    <CommandItem
+                                      key={service.id}
+                                      value={service.id.toString()}
+                                      onSelect={() => {
+                                        setAppointmentSelectedConsultation(service);
+                                        setConsultationSelectionError("");
+                                        setOpenConsultationCombo(false);
+                                      }}
+                                    >
+                                      <div className="flex items-center gap-2 w-full">
+                                        <span className="flex-1 text-left">{service.serviceName}</span>
+                                        <span className="text-xs text-gray-500">
+                                          {service.currency} {service.basePrice}
+                                        </span>
+                                      </div>
+                                    </CommandItem>
+                                  ))}
+                                </CommandGroup>
+                              </CommandList>
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
+                        {appointmentSelectedConsultation && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="mt-1 px-0 text-blue-600"
+                            onClick={() => setAppointmentSelectedConsultation(null)}
+                          >
+                            Clear selection
+                          </Button>
+                        )}
+                        {consultationSelectionError && (
+                          <p className="text-red-500 text-xs mt-1">{consultationSelectionError}</p>
+                        )}
+                      </>
+                    )}
+                  </div>
+                </div>
+
                 {/* Row 2: Patient and Duration */}
                 <div className="grid grid-cols-2 gap-6">
                   <div>
@@ -2228,9 +2489,12 @@ Medical License: [License Number]
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="15">15 minutes</SelectItem>
-                        <SelectItem value="30">30 minutes</SelectItem>
-                        <SelectItem value="60">60 minutes</SelectItem>
+                      <SelectItem value="15">15 minutes</SelectItem>
+                      <SelectItem value="30">30 minutes</SelectItem>
+                      <SelectItem value="60">60 minutes</SelectItem>
+                      <SelectItem value="90">90 minutes</SelectItem>
+                      <SelectItem value="120">120 minutes (2 hours)</SelectItem>
+                      <SelectItem value="180">180 minutes (3 hours)</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -2427,6 +2691,7 @@ Medical License: [License Number]
                         <SelectItem value="15">15 minutes</SelectItem>
                         <SelectItem value="30">30 minutes</SelectItem>
                         <SelectItem value="60">60 minutes</SelectItem>
+                        <SelectItem value="90">90 minutes</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -2565,6 +2830,30 @@ Medical License: [License Number]
                           <p className="font-medium text-gray-900">{selectedDuration} minutes</p>
                         </div>
                       </div>
+                    
+                    <div>
+                      <p className="text-gray-500 text-xs">Appointment Type</p>
+                      <p className="font-medium text-gray-900">
+                        {appointmentType
+                          ? appointmentType.charAt(0).toUpperCase() + appointmentType.slice(1)
+                          : "Not selected"}
+                      </p>
+                    </div>
+                    {appointmentServicePreview && (
+                      <div>
+                        <p className="text-gray-500 text-xs">Service</p>
+                        <div className="flex items-center gap-2">
+                          <span
+                            className="inline-flex h-3 w-3 rounded-full border border-gray-300"
+                            style={{ backgroundColor: appointmentServicePreview.color }}
+                          />
+                          <span className="font-medium">
+                            {appointmentServicePreview.name}
+                            {appointmentServicePreview.price ? ` • ${appointmentServicePreview.price}` : ""}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                       
                       <div>
                         <p className="text-gray-500 text-xs">Patient</p>
@@ -2763,48 +3052,7 @@ Medical License: [License Number]
                       }
                     }
                     
-                    // Fetch doctor's fee
-                    try {
-                      const response = await apiRequest("GET", `/api/doctors-fee/${selectedProviderId}`);
-                      if (!response.ok) {
-                        throw new Error("Failed to fetch doctor's fee");
-                      }
-                      const feeData = await response.json();
-                      setDoctorFee(feeData);
-                      
-                      // Initialize invoice data with fetched fee
-                      const selectedDate = format(newAppointmentDate!, 'yyyy-MM-dd');
-                      
-                      const selectedPatient = patientsData?.find((p: any) => p.id.toString() === newAppointmentData.patientId);
-                      const providerName = usersData?.find((u: any) => u.id.toString() === selectedProviderId);
-                      
-                      setInvoiceData({
-                        serviceDate: selectedDate,
-                        doctor: `${providerName?.firstName || ''} ${providerName?.lastName || ''}`,
-                        invoiceDate: selectedDate,
-                        dueDate: selectedDate,
-                        services: [{
-                          code: feeData.serviceCode || 'CONS-001',
-                          description: feeData.serviceName || 'General Consultation',
-                          quantity: 1,
-                          amount: parseFloat(feeData.basePrice || '50.00')
-                        }],
-                        insuranceProvider: selectedPatient?.insuranceProvider || 'None (Patient Self-Pay)',
-                        totalAmount: feeData.basePrice || '50.00',
-                        notes: ''
-                      });
-                      
-                      // Show invoice dialog
-                      setShowInvoiceDialog(true);
-                    } catch (error) {
-                      console.error("Error fetching doctor's fee:", error);
-                      toast({
-                        title: "Error",
-                        description: "Failed to fetch doctor's fee. Please try again.",
-                        variant: "destructive",
-                      });
-                      return; // Stop if fee fetch fails
-                    }
+                    setShowConfirmationDialog(true);
                   }}
                 >
                   Create Appointment
@@ -2913,388 +3161,40 @@ Medical License: [License Number]
             >
               Go Back
             </Button>
-            <Button
-              onClick={async () => {
-                // Create new datetime without timezone conversion
-                const selectedDate = format(newAppointmentDate!, 'yyyy-MM-dd');
-                const [time, period] = newSelectedTimeSlot.split(' ');
-                const [hours, minutes] = time.split(':');
-                let hour24 = parseInt(hours);
-                
-                if (period === 'PM' && hour24 !== 12) {
-                  hour24 += 12;
-                } else if (period === 'AM' && hour24 === 12) {
-                  hour24 = 0;
-                }
-                
-                // Validate that the appointment time is not in the past
-                const now = new Date();
-                const appointmentDateTime = new Date(`${selectedDate}T${hour24.toString().padStart(2, '0')}:${minutes}:00`);
-                
-                if (appointmentDateTime < now) {
-                  toast({
-                    title: "Invalid Appointment Time",
-                    description: "Cannot schedule appointments in the past. Please select a current or future time slot.",
-                    variant: "destructive",
-                  });
-                  return;
-                }
-                
-                const newScheduledAt = `${selectedDate}T${hour24.toString().padStart(2, '0')}:${minutes}:00`;
-                
-                // Check for conflicts in the database before creating
-                const conflictResult = await checkAppointmentConflicts(
-                  parseInt(newAppointmentData.patientId),
-                  parseInt(selectedProviderId),
-                  newScheduledAt
-                );
-                
-                if (conflictResult.hasConflict) {
-                  toast({
-                    title: "Appointment Conflict",
-                    description: conflictResult.message,
-                    variant: "destructive",
-                  });
-                  return;
-                }
-                
-                // Generate title from patient and provider names
-                const patientName = patientsData?.find((p: any) => p.id.toString() === newAppointmentData.patientId);
-                const providerName = usersData?.find((u: any) => u.id.toString() === selectedProviderId);
-                const generatedTitle = `${patientName?.firstName || 'Patient'} - ${selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)} Appointment`;
-                
-                createAppointmentMutation.mutate({
-                  patientId: parseInt(newAppointmentData.patientId),
-                  providerId: parseInt(selectedProviderId),
-                  assignedRole: selectedRole,
-                  title: generatedTitle,
-                  type: "consultation",
-                  status: "scheduled",
-                  scheduledAt: newScheduledAt,
-                  duration: selectedDuration,
-                  description: "",
-                  createdBy: user?.id,
-                }, {
-                  onSuccess: () => {
-                    setShowSuccessModal(true);
+              <Button
+                onClick={async () => {
+                  // Must select appointment type and corresponding option
+                  if (!appointmentType) {
+                    setAppointmentTypeError("Please select an appointment type.");
+                    return;
                   }
-                });
-                
-                setShowConfirmationDialog(false);
-                setShowNewAppointment(false); // Close main dialog
-              }}
-              disabled={createAppointmentMutation.isPending}
-            >
-              {createAppointmentMutation.isPending ? "Confirming..." : "Confirm"}
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
+                  if (appointmentType === "treatment" && !appointmentSelectedTreatment) {
+                    setTreatmentSelectionError("Please select a treatment.");
+                    return;
+                  }
+                  if (
+                    appointmentType === "consultation" &&
+                    !appointmentSelectedConsultation
+                  ) {
+                    setConsultationSelectionError("Please select a consultation.");
+                    return;
+                  }
 
-      {/* Create New Invoice Dialog */}
-      <Dialog open={showInvoiceDialog} onOpenChange={setShowInvoiceDialog}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="text-xl font-bold text-blue-800">Create New Invoice</DialogTitle>
-            <DialogDescription>Invoice details for the appointment</DialogDescription>
-          </DialogHeader>
-          
-          <div className="space-y-4 mt-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label>Patient</Label>
-                <Input 
-                  value={patientsData?.find((p: any) => p.id.toString() === newAppointmentData.patientId)?.firstName + ' ' + patientsData?.find((p: any) => p.id.toString() === newAppointmentData.patientId)?.lastName || ''}
-                  disabled
-                  className="bg-gray-100"
-                />
-              </div>
-              <div>
-                <Label>Service Date</Label>
-                <Input 
-                  type="date"
-                  value={invoiceData.serviceDate}
-                  onChange={(e) => setInvoiceData({...invoiceData, serviceDate: e.target.value})}
-                />
-              </div>
-            </div>
-
-            <div>
-              <Label>Doctor</Label>
-              <Input 
-                value={invoiceData.doctor}
-                disabled
-                className="bg-gray-100"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <Label>Invoice Date</Label>
-                <Input 
-                  type="date"
-                  value={invoiceData.invoiceDate}
-                  onChange={(e) => setInvoiceData({...invoiceData, invoiceDate: e.target.value})}
-                />
-              </div>
-              <div>
-                <Label>Due Date</Label>
-                <Input 
-                  type="date"
-                  value={invoiceData.dueDate}
-                  onChange={(e) => setInvoiceData({...invoiceData, dueDate: e.target.value})}
-                />
-              </div>
-            </div>
-
-            <div className="border rounded p-4 bg-gray-50">
-              <h5 className="font-semibold mb-2">Services & Procedures</h5>
-              <div className="grid grid-cols-3 gap-2 mb-2 text-sm font-medium">
-                <div>Code</div>
-                <div>Description</div>
-                <div>Amount</div>
-              </div>
-              {invoiceData.services.map((service: any, index: number) => (
-                <div key={index} className="grid grid-cols-3 gap-2 mb-2">
-                  <Input value={service.code} disabled className="bg-gray-100" />
-                  <Input value={service.description} disabled className="bg-gray-100" />
-                  <Input value={service.amount.toFixed(2)} disabled className="bg-gray-100" />
-                </div>
-              ))}
-            </div>
-
-            <div>
-              <Label>Insurance Provider</Label>
-              <Select
-                value={invoiceData.insuranceProvider}
-                onValueChange={(value) => setInvoiceData({...invoiceData, insuranceProvider: value})}
-              >
-                <SelectTrigger data-testid="select-insurance-provider">
-                  <SelectValue placeholder="Select insurance provider..." />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="None (Patient Self-Pay)">None (Patient Self-Pay)</SelectItem>
-                  <SelectItem value="NHS (National Health Service)">NHS (National Health Service)</SelectItem>
-                  <SelectItem value="Bupa">Bupa</SelectItem>
-                  <SelectItem value="AXA PPP Healthcare">AXA PPP Healthcare</SelectItem>
-                  <SelectItem value="Vitality Health">Vitality Health</SelectItem>
-                  <SelectItem value="Aviva Health">Aviva Health</SelectItem>
-                  <SelectItem value="Simply Health">Simply Health</SelectItem>
-                  <SelectItem value="WPA">WPA</SelectItem>
-                  <SelectItem value="Benenden Health">Benenden Health</SelectItem>
-                  <SelectItem value="Healix Health Services">Healix Health Services</SelectItem>
-                  <SelectItem value="Sovereign Health Care">Sovereign Health Care</SelectItem>
-                  <SelectItem value="Exeter Friendly Society">Exeter Friendly Society</SelectItem>
-                  <SelectItem value="Self-Pay">Self-Pay</SelectItem>
-                  <SelectItem value="Other">Other</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div>
-              <Label>Total Amount</Label>
-              <Input 
-                value={invoiceData.totalAmount}
-                disabled
-                className="bg-gray-100 font-bold text-lg"
-              />
-            </div>
-
-            {/* Invoice Type Display */}
-            {invoiceData.insuranceProvider && invoiceData.insuranceProvider !== "None (Patient Self-Pay)" && invoiceData.insuranceProvider !== "Self-Pay" && (
-              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-4">
-                <div className="flex items-start gap-2 mb-2">
-                  <Label className="text-sm font-medium">Invoice Type:</Label>
-                  <Badge className="bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-200 border-blue-300 dark:border-blue-700">
-                    Insurance Claim
-                  </Badge>
-                </div>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
-                  This invoice will be submitted to the insurance provider for payment
-                </p>
-              </div>
-            )}
-
-            <div>
-              <Label>Notes</Label>
-              <Textarea 
-                value={invoiceData.notes}
-                onChange={(e) => setInvoiceData({...invoiceData, notes: e.target.value})}
-                placeholder="Add any additional notes about this invoice..."
-              />
-            </div>
-
-            <div>
-              <Label>Payment Method</Label>
-              <Select
-                value={invoiceData.paymentMethod}
-                onValueChange={(value) => setInvoiceData({...invoiceData, paymentMethod: value})}
-              >
-                <SelectTrigger data-testid="select-payment-method">
-                  <SelectValue placeholder="Select payment method" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Cash">Cash</SelectItem>
-                  <SelectItem value="Debit Card">Debit Card</SelectItem>
-                  <SelectItem value="Credit Card">Credit Card</SelectItem>
-                  <SelectItem value="Insurance">Insurance</SelectItem>
-                  <SelectItem value="Bank Transfer">Bank Transfer</SelectItem>
-                  <SelectItem value="Check">Check</SelectItem>
-                  <SelectItem value="Online Payment">Online Payment</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div className="flex justify-end space-x-2 pt-4 border-t mt-4">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setShowInvoiceDialog(false);
-              }}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={() => {
-                // Close invoice dialog and show summary
-                setShowInvoiceDialog(false);
-                setShowInvoiceSummaryDialog(true);
-              }}
-            >
-              Create Invoice
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Invoice Summary Dialog */}
-      <Dialog open={showInvoiceSummaryDialog} onOpenChange={setShowInvoiceSummaryDialog}>
-        <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="text-xl font-bold text-blue-600">Booking Summary</DialogTitle>
-            <DialogDescription>Review appointment and invoice details before confirming</DialogDescription>
-          </DialogHeader>
-          
-          <div className="space-y-4 mt-4">
-            {/* Appointment Details */}
-            <div className="border border-gray-200 rounded-lg p-4 bg-white dark:bg-gray-900">
-              <div className="flex items-center gap-2 mb-4">
-                <Calendar className="h-5 w-5 text-gray-600" />
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Appointment Details</h3>
-              </div>
-              <div className="space-y-3 text-sm">
-                <div className="grid grid-cols-2 gap-6">
-                  <div>
-                    <p className="text-gray-500 dark:text-gray-400 text-xs mb-1">Patient</p>
-                    <p className="font-medium text-gray-900 dark:text-gray-100">
-                      {patientsData?.find((p: any) => p.id.toString() === newAppointmentData.patientId)?.firstName} {patientsData?.find((p: any) => p.id.toString() === newAppointmentData.patientId)?.lastName}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500 dark:text-gray-400 text-xs mb-1">Doctor</p>
-                    <p className="font-medium text-gray-900 dark:text-gray-100">{invoiceData.doctor}</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-6">
-                  <div>
-                    <p className="text-gray-500 dark:text-gray-400 text-xs mb-1">Date & Time</p>
-                    <p className="font-medium text-gray-900 dark:text-gray-100">
-                      {newAppointmentDate ? format(newAppointmentDate, 'MMMM do, yyyy') : "Not selected"}, {newSelectedTimeSlot || ""}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500 dark:text-gray-400 text-xs mb-1">Duration</p>
-                    <p className="font-medium text-gray-900 dark:text-gray-100">{selectedDuration} minutes</p>
-                  </div>
-                </div>
-                <div className="grid grid-cols-2 gap-6">
-                  <div>
-                    <p className="text-gray-500 dark:text-gray-400 text-xs mb-1">Type</p>
-                    <p className="font-medium text-gray-900 dark:text-gray-100">Consultation</p>
-                  </div>
-                  <div>
-                    <p className="text-gray-500 dark:text-gray-400 text-xs mb-1">Location</p>
-                    <p className="font-medium text-gray-900 dark:text-gray-100">{selectedRole ? selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1) : "General Medicine"}</p>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Invoice Details */}
-            <div className="border border-gray-200 rounded-lg p-4 bg-white dark:bg-gray-900">
-              <div className="flex items-center gap-2 mb-4">
-                <FileText className="h-5 w-5 text-gray-600" />
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Invoice Details</h3>
-              </div>
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between items-center py-1">
-                  <span className="text-gray-500 dark:text-gray-400">Service</span>
-                  <span className="font-medium text-gray-900 dark:text-gray-100">{invoiceData.services?.[0]?.description || "General Consultation"}</span>
-                </div>
-                <div className="flex justify-between items-center py-1">
-                  <span className="text-gray-500 dark:text-gray-400">Service Code</span>
-                  <span className="font-medium text-gray-900 dark:text-gray-100">{invoiceData.services?.[0]?.code || "CONS-001"}</span>
-                </div>
-                <div className="flex justify-between items-center py-1">
-                  <span className="text-gray-500 dark:text-gray-400">Invoice Date</span>
-                  <span className="font-medium text-gray-900 dark:text-gray-100">{invoiceData.invoiceDate ? format(new Date(invoiceData.invoiceDate), 'MMM d, yyyy') : "Not set"}</span>
-                </div>
-                <div className="flex justify-between items-center py-1">
-                  <span className="text-gray-500 dark:text-gray-400">Due Date</span>
-                  <span className="font-medium text-gray-900 dark:text-gray-100">{invoiceData.dueDate ? format(new Date(invoiceData.dueDate), 'MMM d, yyyy') : "Not set"}</span>
-                </div>
-                <div className="flex justify-between items-center py-1">
-                  <span className="text-gray-500 dark:text-gray-400">Payment Method</span>
-                  <span className="font-medium text-gray-900 dark:text-gray-100">{invoiceData.paymentMethod || "Not selected"}</span>
-                </div>
-                <div className="flex justify-between items-center py-1">
-                  <span className="text-gray-500 dark:text-gray-400">Insurance Provider</span>
-                  <span className="font-medium text-gray-900 dark:text-gray-100">{invoiceData.insuranceProvider || "None (Patient Self-Pay)"}</span>
-                </div>
-                <div className="flex justify-between items-center py-2 border-t mt-2">
-                  <span className="text-gray-700 dark:text-gray-300 font-medium">Total Amount</span>
-                  <span className="font-bold text-green-600 text-lg">£{parseFloat(invoiceData.totalAmount || 0).toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between items-center py-1">
-                  <span className="text-gray-500 dark:text-gray-400">Status</span>
-                  <Badge className="bg-yellow-100 text-yellow-800 border-yellow-300">Pending</Badge>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex justify-end space-x-3 pt-4 border-t mt-4">
-            <Button
-              variant="outline"
-              onClick={() => {
-                setShowInvoiceSummaryDialog(false);
-                setShowInvoiceDialog(true);
-              }}
-            >
-              Back to Edit
-            </Button>
-            <Button
-              onClick={async () => {
-                try {
-                  setIsCreatingPayment(true);
-                  const selectedPatient = patientsData?.find((p: any) => p.id.toString() === newAppointmentData.patientId);
-                  
-                  // Create appointment first to get the auto-generated appointment_id
-                  const selectedDate = format(newAppointmentDate!, 'yyyy-MM-dd');
-                  const [time, period] = newSelectedTimeSlot.split(' ');
-                  const [hours, minutes] = time.split(':');
+                  // Create new datetime without timezone conversion
+                  const selectedDate = format(newAppointmentDate!, "yyyy-MM-dd");
+                  const [time, period] = newSelectedTimeSlot.split(" ");
+                  const [hours, minutes] = time.split(":");
                   let hour24 = parseInt(hours);
                   
-                  if (period === 'PM' && hour24 !== 12) {
+                  if (period === "PM" && hour24 !== 12) {
                     hour24 += 12;
-                  } else if (period === 'AM' && hour24 === 12) {
+                  } else if (period === "AM" && hour24 === 12) {
                     hour24 = 0;
                   }
                   
                   // Validate that the appointment time is not in the past
                   const now = new Date();
-                  const appointmentDateTime = new Date(`${selectedDate}T${hour24.toString().padStart(2, '0')}:${minutes}:00`);
+                  const appointmentDateTime = new Date(`${selectedDate}T${hour24.toString().padStart(2, "0")}:${minutes}:00`);
                   
                   if (appointmentDateTime < now) {
                     toast({
@@ -3302,11 +3202,10 @@ Medical License: [License Number]
                       description: "Cannot schedule appointments in the past. Please select a current or future time slot.",
                       variant: "destructive",
                     });
-                    setIsCreatingPayment(false);
                     return;
                   }
                   
-                  const newScheduledAt = `${selectedDate}T${hour24.toString().padStart(2, '0')}:${minutes}:00`;
+                  const newScheduledAt = `${selectedDate}T${hour24.toString().padStart(2, "0")}:${minutes}:00`;
                   
                   // Check for conflicts in the database before creating
                   const conflictResult = await checkAppointmentConflicts(
@@ -3321,175 +3220,51 @@ Medical License: [License Number]
                       description: conflictResult.message,
                       variant: "destructive",
                     });
-                    setIsCreatingPayment(false);
                     return;
                   }
                   
+                  // Generate title from patient and provider names
+                  const patientName = patientsData?.find((p: any) => p.id.toString() === newAppointmentData.patientId);
                   const providerName = usersData?.find((u: any) => u.id.toString() === selectedProviderId);
-                  const generatedTitle = `${selectedPatient?.firstName || 'Patient'} - ${selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)} Appointment`;
+                  const generatedTitle = `${patientName?.firstName || 'Patient'} - ${selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)} Appointment`;
                   
-                  const appointmentPayload = {
+                  const normalizedAppointmentType = appointmentType || "consultation";
+                  const treatmentId = normalizedAppointmentType === "treatment"
+                    ? appointmentSelectedTreatment?.id || null
+                    : null;
+                  const consultationId = normalizedAppointmentType === "consultation"
+                    ? appointmentSelectedConsultation?.id || null
+                    : null;
+
+                  createAppointmentMutation.mutate({
                     patientId: parseInt(newAppointmentData.patientId),
                     providerId: parseInt(selectedProviderId),
                     assignedRole: selectedRole,
                     title: generatedTitle,
-                    type: "consultation",
+                    type: normalizedAppointmentType === "treatment" ? "procedure" : "consultation",
+                    appointmentType: normalizedAppointmentType,
+                    treatmentId,
+                    treatment_id: treatmentId,
+                    consultationId,
+                    consultation_id: consultationId,
                     status: "scheduled",
                     scheduledAt: newScheduledAt,
                     duration: selectedDuration,
                     description: "",
                     createdBy: user?.id,
-                  };
-                  
-                  console.log("Creating appointment with payload:", appointmentPayload);
-                  const appointmentResult = await createAppointmentMutation.mutateAsync(appointmentPayload);
-                  console.log("✅ Appointment created successfully:", appointmentResult);
-                  console.log("✅ Auto-generated appointment_id:", appointmentResult.appointmentId);
-                  
-                  // Check if payment method is Credit Card or Debit Card - requires Stripe payment
-                  const isCardPayment = invoiceData.paymentMethod === "Credit Card" || invoiceData.paymentMethod === "Debit Card";
-                  
-                  // Now create invoice with appointment_id as service_id
-                  const isInsuranceClaim = invoiceData.insuranceProvider && 
-                    invoiceData.insuranceProvider !== "None (Patient Self-Pay)" && 
-                    invoiceData.insuranceProvider !== "Self-Pay";
-                  
-                  const invoicePayload = {
-                    patientId: selectedPatient?.patientId || '',
-                    patientName: `${selectedPatient?.firstName || ''} ${selectedPatient?.lastName || ''}`,
-                    nhsNumber: selectedPatient?.nhsNumber || '',
-                    dateOfService: invoiceData.serviceDate,
-                    invoiceDate: invoiceData.invoiceDate,
-                    dueDate: invoiceData.dueDate,
-                    status: isCardPayment ? 'pending' : (invoiceData.paymentMethod === 'Cash' ? 'paid' : 'draft'),
-                    invoiceType: isInsuranceClaim ? 'insurance_claim' : 'payment',
-                    subtotal: invoiceData.totalAmount,
-                    tax: '0',
-                    discount: '0',
-                    totalAmount: invoiceData.totalAmount,
-                    paidAmount: '0',
-                    items: invoiceData.services.map((service: any) => ({
-                      code: service.code,
-                      description: service.description,
-                      quantity: 1,
-                      unitPrice: parseFloat(service.amount || 0),
-                      total: parseFloat(service.amount || 0)
-                    })),
-                    insuranceProvider: invoiceData.insuranceProvider,
-                    notes: invoiceData.notes,
-                    paymentMethod: invoiceData.paymentMethod,
-                    serviceId: appointmentResult.appointmentId
-                  };
-                  
-                  console.log("✅ Creating invoice with appointment_id in service_id:", appointmentResult.appointmentId);
-                  console.log("Creating invoice with full payload:", invoicePayload);
-                  const createdInvoice = await createInvoiceMutation.mutateAsync(invoicePayload);
-                  
-                  // If payment method is Credit Card or Debit Card, open Stripe payment
-                  if (isCardPayment) {
-                    try {
-                      // Create Stripe payment intent
-                      const paymentRes = await apiRequest('POST', '/api/billing/create-payment-intent', {
-                        invoiceId: createdInvoice.id
-                      });
-                      
-                      const contentType = paymentRes.headers.get('content-type');
-                      if (!contentType || !contentType.includes('application/json')) {
-                        throw new Error('Invalid response format from server');
-                      }
-                      
-                      const paymentData = await paymentRes.json();
-                      
-                      if (paymentData.clientSecret) {
-                        // Store pending data and show Stripe dialog
-                        setStripeClientSecret(paymentData.clientSecret);
-                        setPendingInvoiceId(createdInvoice.id);
-                        setPendingAppointmentDetails(appointmentResult);
-                        setShowInvoiceSummaryDialog(false);
-                        setShowStripePaymentDialog(true);
-                        setIsCreatingPayment(false);
-                      } else {
-                        throw new Error('Failed to create payment session');
-                      }
-                    } catch (stripeError) {
-                      console.error("Stripe payment intent error:", stripeError);
-                      toast({
-                        title: "Payment Setup Failed",
-                        description: stripeError instanceof Error ? stripeError.message : "Failed to set up payment. Please try again.",
-                        variant: "destructive",
-                      });
-                      setIsCreatingPayment(false);
+                  }, {
+                    onSuccess: () => {
+                      setShowSuccessModal(true);
                     }
-                    return;
-                  }
-                  
-                  // If payment method is Insurance, automatically submit insurance claim
-                  if (invoiceData.paymentMethod === "Insurance" && invoiceData.insuranceProvider) {
-                    try {
-                      const claimNumber = `AUTO-${Date.now()}`;
-                      await apiRequest('POST', '/api/insurance/submit-claim', {
-                        invoiceId: createdInvoice.id,
-                        provider: invoiceData.insuranceProvider,
-                        claimNumber: claimNumber
-                      });
-                      console.log("Insurance claim submitted automatically:", { invoiceId: createdInvoice.id, provider: invoiceData.insuranceProvider, claimNumber });
-                    } catch (claimError) {
-                      console.error("Failed to auto-submit insurance claim:", claimError);
-                    }
-                  }
-                  
-                  // Invalidate queries to refresh data
-                  queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
-                  queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
-                  
-                  // Close all dialogs
-                  setShowInvoiceSummaryDialog(false);
-                  setShowNewAppointment(false);
-                  
-                  // Store appointment details and show success modal
-                  setCreatedAppointmentDetails(appointmentResult);
-                  setShowSuccessModal(true);
-                  
-                  // Reset form and invoice data
-                  setNewAppointmentDate(undefined);
-                  setNewSelectedTimeSlot("");
-                  setSelectedRole("");
-                  setSelectedProviderId("");
-                  setSelectedDuration(30);
-                  setNewAppointmentData({
-                    title: "",
-                    type: "consultation",
-                    patientId: "",
-                    description: "",
                   });
-                  setInvoiceData({
-                    serviceDate: "",
-                    doctor: "",
-                    invoiceDate: "",
-                    dueDate: "",
-                    services: [],
-                    insuranceProvider: "",
-                    totalAmount: "0.00",
-                    notes: "",
-                    paymentMethod: ""
-                  });
-                  setIsCreatingPayment(false);
-                } catch (error) {
-                  console.error("Error creating appointment and invoice:", error);
-                  toast({
-                    title: "Creation Failed",
-                    description: error instanceof Error ? error.message : "Failed to create appointment and invoice. Please try again.",
-                    variant: "destructive",
-                  });
-                  setIsCreatingPayment(false);
-                }
-              }}
-              disabled={createAppointmentMutation.isPending || createInvoiceMutation.isPending || isCreatingPayment}
-              className="bg-green-600 hover:bg-green-700 text-white"
-              data-testid="button-confirm-booking"
-            >
-              {(createAppointmentMutation.isPending || createInvoiceMutation.isPending || isCreatingPayment) ? "Confirming..." : "Confirm Booking"}
-            </Button>
+                  
+                  setShowConfirmationDialog(false);
+                  setShowNewAppointment(false); // Close main dialog
+                }}
+                disabled={createAppointmentMutation.isPending}
+              >
+                {createAppointmentMutation.isPending ? "Confirming..." : "Confirm"}
+              </Button>
           </div>
         </DialogContent>
       </Dialog>
@@ -3560,7 +3335,9 @@ Medical License: [License Number]
                 </div>
                 <div className="flex justify-between items-center text-sm">
                   <span className="text-gray-600 font-medium">Type:</span>
-                  <span className="text-gray-900 capitalize">{createdAppointmentDetails.type || 'N/A'}</span>
+                  <span className="text-gray-900 capitalize">
+                    {(createdAppointmentDetails.appointmentType || createdAppointmentDetails.type || 'N/A').replace('_', ' ')}
+                  </span>
                 </div>
               </div>
             )}
@@ -3619,115 +3396,6 @@ Medical License: [License Number]
         </DialogContent>
       </Dialog>
 
-      {/* Stripe Payment Dialog */}
-      <Dialog 
-        open={showStripePaymentDialog} 
-        onOpenChange={(open) => {
-          if (!open) {
-            setShowStripePaymentDialog(false);
-            setStripeClientSecret("");
-            setPendingInvoiceId("");
-            setPendingAppointmentDetails(null);
-          }
-        }}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <CreditCard className="h-5 w-5" />
-              Complete Payment
-            </DialogTitle>
-            <DialogDescription>
-              Enter your card details to complete the payment of £{invoiceData.totalAmount}
-            </DialogDescription>
-          </DialogHeader>
-          
-          {stripeClientSecret && stripePromise ? (
-            <Elements stripe={stripePromise} options={{ clientSecret: stripeClientSecret }}>
-              <AppointmentStripePaymentForm 
-                invoiceId={pendingInvoiceId}
-                amount={parseFloat(invoiceData.totalAmount)}
-                onSuccess={() => {
-                  // Invalidate queries
-                  queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
-                  queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
-                  
-                  // Close Stripe dialog
-                  setShowStripePaymentDialog(false);
-                  setStripeClientSecret("");
-                  
-                  // Store appointment details and show success modal
-                  setCreatedAppointmentDetails(pendingAppointmentDetails);
-                  setPendingInvoiceId("");
-                  setPendingAppointmentDetails(null);
-                  setShowNewAppointment(false);
-                  setShowSuccessModal(true);
-                  
-                  // Reset form
-                  setNewAppointmentDate(undefined);
-                  setNewSelectedTimeSlot("");
-                  setSelectedRole("");
-                  setSelectedProviderId("");
-                  setSelectedDuration(30);
-                  setNewAppointmentData({
-                    title: "",
-                    type: "consultation",
-                    patientId: "",
-                    description: "",
-                  });
-                  setInvoiceData({
-                    serviceDate: "",
-                    doctor: "",
-                    invoiceDate: "",
-                    dueDate: "",
-                    services: [],
-                    insuranceProvider: "",
-                    totalAmount: "0.00",
-                    notes: "",
-                    paymentMethod: ""
-                  });
-                  
-                  toast({
-                    title: "Payment Successful",
-                    description: "Your appointment has been booked and paid successfully!",
-                  });
-                }}
-                onCancel={() => {
-                  setShowStripePaymentDialog(false);
-                  setStripeClientSecret("");
-                  setPendingInvoiceId("");
-                  setPendingAppointmentDetails(null);
-                }}
-              />
-            </Elements>
-          ) : (
-            <div className="text-center py-8">
-              {!stripePromise ? (
-                <>
-                  <AlertTriangle className="h-12 w-12 text-yellow-500 mx-auto mb-4" />
-                  <p className="text-sm text-gray-600 dark:text-gray-400">Payment processing is not configured. Please contact support.</p>
-                  <Button 
-                    variant="outline" 
-                    onClick={() => {
-                      setShowStripePaymentDialog(false);
-                      setStripeClientSecret("");
-                    }} 
-                    className="mt-4"
-                  >
-                    Close
-                  </Button>
-                </>
-              ) : (
-                <>
-                  <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-blue-500" />
-                  <p className="text-sm text-gray-600">Initializing payment...</p>
-                </>
-              )}
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
       {/* Duplicate Appointment Warning Dialog */}
       <Dialog open={showDuplicateWarning} onOpenChange={setShowDuplicateWarning}>
         <DialogContent className="max-w-md">
@@ -3769,7 +3437,7 @@ Medical License: [License Number]
               </DialogHeader>
               
               <div className="space-y-6">
-                {/* Title and Type Row */}
+                {/* Title and Duration Row */}
                 <div className="grid grid-cols-2 gap-6">
                   <div>
                     <Label className="text-sm font-medium text-gray-600">Title</Label>
@@ -3782,22 +3450,221 @@ Medical License: [License Number]
                     />
                   </div>
                   <div>
-                    <Label className="text-sm font-medium text-gray-600">Type</Label>
+                    <Label className="text-sm font-medium text-gray-600">Duration (minutes)</Label>
                     <Select 
-                      defaultValue={editingAppointment.type}
+                      defaultValue={String(editingAppointment.duration || 30)}
                       onValueChange={(value) => {
-                        setEditingAppointment({ ...editingAppointment, type: value });
+                        setEditingAppointment({ ...editingAppointment, duration: parseInt(value) });
                       }}
                     >
                       <SelectTrigger className="mt-1">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>
-                        <SelectItem value="consultation">Consultation</SelectItem>
-                        <SelectItem value="follow_up">Follow-up</SelectItem>
-                        <SelectItem value="procedure">Procedure</SelectItem>
+                        <SelectItem value="15">15 minutes</SelectItem>
+                        <SelectItem value="30">30 minutes</SelectItem>
+                        <SelectItem value="60">60 minutes (1 hour)</SelectItem>
+                        <SelectItem value="90">90 minutes (1.5 hours)</SelectItem>
+                        <SelectItem value="120">120 minutes (2 hours)</SelectItem>
+                        <SelectItem value="180">180 minutes (3 hours)</SelectItem>
                       </SelectContent>
                     </Select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-6">
+                  <div>
+                    <Label className="text-sm font-medium text-gray-600">Appointment Type</Label>
+                    <Popover open={openEditAppointmentTypeCombo} onOpenChange={setOpenEditAppointmentTypeCombo}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          role="combobox"
+                          aria-expanded={openEditAppointmentTypeCombo}
+                          className="w-full justify-between mt-1"
+                        >
+                          {editAppointmentType
+                            ? editAppointmentType.charAt(0).toUpperCase() + editAppointmentType.slice(1)
+                            : "Select an appointment type"}
+                          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-full p-0" align="start">
+                        <Command>
+                          <CommandInput placeholder="Search appointment type..." />
+                          <CommandList>
+                            <CommandEmpty>No type found.</CommandEmpty>
+                            <CommandGroup>
+                              {["consultation", "treatment"].map((type) => (
+                                <CommandItem
+                                  key={type}
+                                  value={type}
+                                  onSelect={(currentValue) => {
+                                    const normalized = currentValue as "consultation" | "treatment";
+                                    setEditAppointmentType(normalized);
+                                    setEditAppointmentSelectedTreatment(null);
+                                    setEditAppointmentSelectedConsultation(null);
+                                    setEditAppointmentTypeError("");
+                                    setEditTreatmentSelectionError("");
+                                    setEditConsultationSelectionError("");
+                                    setOpenEditAppointmentTypeCombo(false);
+                                  }}
+                                >
+                                  <Check
+                                    className={`mr-2 h-4 w-4 ${
+                                      editAppointmentType === type ? "opacity-100" : "opacity-0"
+                                    }`}
+                                  />
+                                  {type.charAt(0).toUpperCase() + type.slice(1)}
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                    {editAppointmentTypeError && (
+                      <p className="text-red-500 text-xs mt-1">{editAppointmentTypeError}</p>
+                    )}
+                  </div>
+                  <div>
+                    {editAppointmentType === "treatment" && (
+                      <>
+                        <Label className="text-sm font-medium text-gray-600">Select Treatment</Label>
+                        <Popover open={openEditTreatmentCombo} onOpenChange={setOpenEditTreatmentCombo}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              role="combobox"
+                              aria-expanded={openEditTreatmentCombo}
+                              className="w-full justify-between mt-1"
+                            >
+                              {editAppointmentSelectedTreatment ? editAppointmentSelectedTreatment.name : "Select a treatment"}
+                              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-full p-0" align="start">
+                            <Command>
+                              <CommandInput placeholder="Search treatments..." />
+                              <CommandList>
+                                {isTreatmentsLoading && (
+                                  <CommandItem disabled>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Loading treatments...
+                                  </CommandItem>
+                                )}
+                                <CommandEmpty>No treatments found.</CommandEmpty>
+                                <CommandGroup>
+                                  {treatmentsList.map((treatment: any) => (
+                                    <CommandItem
+                                      key={treatment.id}
+                                      value={treatment.id.toString()}
+                                      onSelect={() => {
+                                        setEditAppointmentSelectedTreatment(treatment);
+                                        setEditTreatmentSelectionError("");
+                                        setOpenEditTreatmentCombo(false);
+                                      }}
+                                    >
+                                      <div className="flex items-center gap-2 w-full">
+                                        <span
+                                          className="inline-flex h-3 w-3 rounded-full border border-gray-300"
+                                          style={{ backgroundColor: treatment.colorCode || "#D1D5DB" }}
+                                        />
+                                        <span className="flex-1 text-left">{treatment.name}</span>
+                                        <span className="text-xs text-gray-500">
+                                          {treatment.currency} {treatment.basePrice}
+                                        </span>
+                                      </div>
+                                    </CommandItem>
+                                  ))}
+                                </CommandGroup>
+                              </CommandList>
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
+                        {editAppointmentSelectedTreatment && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="mt-1 px-0 text-blue-600"
+                            onClick={() => setEditAppointmentSelectedTreatment(null)}
+                          >
+                            Clear selection
+                          </Button>
+                        )}
+                        {editTreatmentSelectionError && (
+                          <p className="text-red-500 text-xs mt-1">{editTreatmentSelectionError}</p>
+                        )}
+                      </>
+                    )}
+                    {editAppointmentType === "consultation" && (
+                      <>
+                        <Label className="text-sm font-medium text-gray-600">Select Consultation</Label>
+                        <Popover open={openEditConsultationCombo} onOpenChange={setOpenEditConsultationCombo}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              role="combobox"
+                              aria-expanded={openEditConsultationCombo}
+                              className="w-full justify-between mt-1"
+                            >
+                              {editAppointmentSelectedConsultation ? editAppointmentSelectedConsultation.serviceName : "Select a consultation"}
+                              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-full p-0" align="start">
+                            <Command>
+                              <CommandInput placeholder="Search consultation..." />
+                              <CommandList>
+                                {isConsultationsLoading && (
+                                  <CommandItem disabled>
+                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                    Loading consultations...
+                                  </CommandItem>
+                                )}
+                                <CommandEmpty>No consultations found.</CommandEmpty>
+                                <CommandGroup>
+                                  {consultationServices.map((service: any) => (
+                                    <CommandItem
+                                      key={service.id}
+                                      value={service.id.toString()}
+                                      onSelect={() => {
+                                        setEditAppointmentSelectedConsultation(service);
+                                        setEditConsultationSelectionError("");
+                                        setOpenEditConsultationCombo(false);
+                                      }}
+                                    >
+                                      <div className="flex items-center gap-2 w-full">
+                                        <span className="flex-1 text-left">{service.serviceName}</span>
+                                        <span className="text-xs text-gray-500">
+                                          {service.currency} {service.basePrice}
+                                        </span>
+                                      </div>
+                                    </CommandItem>
+                                  ))}
+                                </CommandGroup>
+                              </CommandList>
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
+                        {editAppointmentSelectedConsultation && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="mt-1 px-0 text-blue-600"
+                            onClick={() => setEditAppointmentSelectedConsultation(null)}
+                          >
+                            Clear selection
+                          </Button>
+                        )}
+                        {editConsultationSelectionError && (
+                          <p className="text-red-500 text-xs mt-1">{editConsultationSelectionError}</p>
+                        )}
+                      </>
+                    )}
+                    {!editAppointmentType && (
+                      <p className="text-xs text-gray-500 mt-1">Select an appointment type to continue</p>
+                    )}
                   </div>
                 </div>
 
@@ -3946,8 +3813,8 @@ Medical License: [License Number]
                   </div>
                 </div>
 
-                {/* Status, Duration and Description Row */}
-                <div className="grid grid-cols-3 gap-6">
+                {/* Status and Description Row */}
+                <div className="grid grid-cols-2 gap-6">
                   <div>
                     <Label className="text-sm font-medium text-gray-600">Status</Label>
                     <Select 
@@ -3964,24 +3831,6 @@ Medical License: [License Number]
                         <SelectItem value="completed">Completed</SelectItem>
                         <SelectItem value="cancelled">Cancelled</SelectItem>
                         <SelectItem value="no_show">No Show</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div>
-                    <Label className="text-sm font-medium text-gray-600">Duration (minutes)</Label>
-                    <Select 
-                      defaultValue={String(editingAppointment.duration || 30)}
-                      onValueChange={(value) => {
-                        setEditingAppointment({ ...editingAppointment, duration: parseInt(value) });
-                      }}
-                    >
-                      <SelectTrigger className="mt-1">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="15">15 minutes</SelectItem>
-                        <SelectItem value="30">30 minutes</SelectItem>
-                        <SelectItem value="60">60 minutes</SelectItem>
                       </SelectContent>
                     </Select>
                   </div>
@@ -4013,6 +3862,19 @@ Medical License: [License Number]
                   </Button>
                   <Button
                     onClick={() => {
+                      if (!editAppointmentType) {
+                        setEditAppointmentTypeError("Select an appointment type.");
+                        return;
+                      }
+                      if (editAppointmentType === "treatment" && !editAppointmentSelectedTreatment) {
+                        setEditTreatmentSelectionError("Please select a treatment.");
+                        return;
+                      }
+                      if (editAppointmentType === "consultation" && !editAppointmentSelectedConsultation) {
+                        setEditConsultationSelectionError("Please select a consultation.");
+                        return;
+                      }
+
                       // *** CHANGE 3: Validate date and time slot selection ***
                       if (!editAppointmentDate || !editSelectedTimeSlot) {
                         toast({
@@ -4059,12 +3921,25 @@ Medical License: [License Number]
                         status: editingAppointment.status
                       });
                       
+                      const normalizedEditAppointmentType = editAppointmentType || "consultation";
+                      const treatmentId =
+                        normalizedEditAppointmentType === "treatment"
+                          ? editAppointmentSelectedTreatment?.id || null
+                          : null;
+                      const consultationId =
+                        normalizedEditAppointmentType === "consultation"
+                          ? editAppointmentSelectedConsultation?.id || null
+                          : null;
+
                       editAppointmentMutation.mutate({
                         id: editingAppointment.id,
                         data: {
                           title: editingAppointment.title,
                           type: editingAppointment.type,
                           status: editingAppointment.status,
+                          appointmentType: normalizedEditAppointmentType,
+                          treatmentId,
+                          consultationId,
                           // *** FIX: Convert ISO string to Date object for database ***
                           scheduledAt: new Date(newScheduledAt),
                           description: editingAppointment.description,

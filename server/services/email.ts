@@ -22,6 +22,11 @@ interface EmailTemplate {
   text: string;
 }
 
+interface SendEmailReport {
+  success: boolean;
+  error?: string;
+}
+
 class EmailService {
   private transporter: nodemailer.Transporter;
   private initialized: boolean = false;
@@ -84,56 +89,74 @@ class EmailService {
 
   private async initializeProductionEmailService() {
     try {
-      console.log('[EMAIL] Initializing Gmail SMTP for all environments...');
-      
-      // Force use Gmail SMTP for both development and production
-      console.log('[EMAIL] Using Gmail SMTP for email delivery...');
-      // Production-ready email configuration that works in hosting environments
-      // Credentials from environment variables for security
+      const smtpHost = process.env.SMTP_HOST;
+      const smtpPort = Number(process.env.SMTP_PORT ?? 587);
+      const smtpUser = process.env.SMTP_USER;
+      const smtpPass = process.env.SMTP_PASSWORD;
+
+      if (smtpHost && smtpUser && smtpPass) {
+        console.log('[EMAIL] Initializing SMTP transport from .env');
+        const secure = process.env.SMTP_SECURE === 'true' || smtpPort === 465;
+        this.transporter = nodemailer.createTransport({
+          host: smtpHost,
+          port: smtpPort,
+          secure,
+          auth: {
+            user: smtpUser,
+            pass: smtpPass,
+          },
+          tls: {
+            rejectUnauthorized: process.env.SMTP_REJECT_UNAUTHORIZED !== 'false',
+          },
+          connectionTimeout: 60000,
+          greetingTimeout: 30000,
+          socketTimeout: 60000,
+        });
+        this.initialized = true;
+        console.log('[EMAIL] ✅ SMTP transport configured using environment variables');
+        return;
+      }
+
+      console.log('[EMAIL] SMTP env vars missing, falling back to Gmail SMTP');
       const gmailUser = process.env.GMAIL_SMTP_USER || 'noreply@curaemr.ai';
       const gmailPass = process.env.GMAIL_SMTP_PASSWORD;
-      
+
       if (!gmailPass) {
         console.warn('[EMAIL] GMAIL_SMTP_PASSWORD not set in environment variables');
       }
-      
-      const smtpConfig = {
+
+      this.transporter = nodemailer.createTransport({
         host: 'smtp.gmail.com',
         port: 465,
         secure: true,
         auth: {
           user: gmailUser,
-          pass: gmailPass || ''
+          pass: gmailPass || '',
         },
         debug: false,
         logger: false,
         tls: {
-          rejectUnauthorized: false
+          rejectUnauthorized: false,
         },
-        connectionTimeout: 60000,   // 60 seconds for large attachments
-        greetingTimeout: 30000,     // 30 seconds
-        socketTimeout: 60000        // 60 seconds for large attachments
-      };
-      
-      this.transporter = nodemailer.createTransport(smtpConfig);
-      // Gmail SMTP configured
+        connectionTimeout: 60000,
+        greetingTimeout: 30000,
+        socketTimeout: 60000,
+      });
+
       this.initialized = true;
-      
-      // Skip verification in production to avoid blocking initialization
       console.log('[EMAIL] ✅ Gmail SMTP configured for production');
-      
     } catch (error) {
       console.error('[EMAIL] Failed to initialize email service:', error);
       this.initialized = true;
     }
   }
 
-  private async sendWithSendGrid(options: EmailOptions): Promise<boolean> {
+  private async sendWithSendGrid(options: EmailOptions): Promise<SendEmailReport> {
     try {
       const credentials = await this.getSendGridCredentials();
       if (!credentials) {
         console.log('[EMAIL] SendGrid credentials not available, will try SMTP fallback');
-        return false;
+        return { success: false, error: "SendGrid credentials not available" };
       }
 
       sgMail.setApiKey(credentials.apiKey);
@@ -164,51 +187,68 @@ class EmailService {
 
       await sgMail.send(msg);
       console.log('[EMAIL] ✅ SendGrid email sent successfully');
-      return true;
+      return { success: true };
     } catch (error: any) {
-      console.error('[EMAIL] SendGrid failed:', error.response?.body || error.message);
-      return false;
+      const message = this.formatSendGridError(error);
+      console.error('[EMAIL] SendGrid failed:', message);
+      return { success: false, error: message };
     }
+  }
+
+  private formatSendGridError(error: any): string {
+    if (error?.response?.body?.errors) {
+      const errors = error.response.body.errors;
+      if (Array.isArray(errors) && errors.length > 0) {
+        return errors
+          .map((err: any) => err?.message ?? err?.detail ?? "Unknown SendGrid error")
+          .join(" | ");
+      }
+    }
+    if (error?.message) {
+      return error.message;
+    }
+    return "Unknown SendGrid error";
   }
 
   async sendEmail(options: EmailOptions): Promise<boolean> {
+    const report = await this.sendEmailWithReport(options);
+    return report.success;
+  }
+
+  async sendEmailWithReport(options: EmailOptions): Promise<SendEmailReport> {
     try {
-      // Try SendGrid first (best for production with attachments)
       const sendGridResult = await this.sendWithSendGrid(options);
-      if (sendGridResult) {
-        return true;
+      if (sendGridResult.success) {
+        return { success: true };
       }
 
-      // Fallback to Gmail SMTP
-      console.log('[EMAIL] SendGrid unavailable, trying Gmail SMTP...');
-      const result = await this.sendWithSMTP(options);
-      if (result) {
-        return true;
+      console.log('[EMAIL] SendGrid unavailable, trying SMTP fallback...');
+      const smtpResult = await this.sendWithSMTP(options);
+      if (smtpResult.success) {
+        return { success: true };
       }
-      
-      // If both fail, log the email details for manual follow-up
-      console.log('[EMAIL] 🚨 EMAIL DELIVERY FAILED:');
+
+      const errorMessage =
+        smtpResult.error ||
+        sendGridResult.error ||
+        "Unknown error while sending email via SendGrid/SMTP";
+      console.log('[EMAIL] 🚨 EMAIL DELIVERY FAILED:', errorMessage);
       console.log('[EMAIL] TO:', options.to);
       console.log('[EMAIL] SUBJECT:', options.subject);
       console.log('[EMAIL] CONTENT:', options.text?.substring(0, 200));
-      
-      // Return false to properly indicate delivery failure
-      return false;
-      
-    } catch (error) {
+      return { success: false, error: errorMessage };
+    } catch (error: any) {
       console.error('[EMAIL] Failed to send email:', error);
-      // Return false to indicate delivery failure
-      return false;
+      return { success: false, error: error?.message || "Unknown error" };
     }
   }
 
-  private async sendWithSMTP(options: EmailOptions): Promise<boolean> {
+  private async sendWithSMTP(options: EmailOptions): Promise<SendEmailReport> {
     try {
       // Use only the attachments provided in options, don't add logos automatically
       const attachments = [...(options.attachments || [])];
 
-      // Use authenticated Gmail address to match SMTP credentials (production-safe)
-      let fromAddress = options.from || 'noreply@curaemr.ai';
+      const fromAddress = options.from || process.env.EMAIL_FROM || process.env.SMTP_FROM || 'noreply@curaemr.ai';
 
       const mailOptions = {
         from: fromAddress,
@@ -229,33 +269,33 @@ class EmailService {
       try {
         const result = await this.transporter.sendMail(mailOptions);
         console.log('[EMAIL] SMTP email sent successfully:', result.messageId);
-        return true;
+        return { success: true };
       } catch (smtpError: any) {
         console.log('[EMAIL] Primary SMTP failed:', smtpError.message);
-        
+        this.logEmailContent(mailOptions);
+
         // If primary fails due to domain issues, try fallback method
         if (smtpError.code === 'ENOTFOUND' || smtpError.code === 'ECONNREFUSED') {
           console.log('[EMAIL] Domain not configured, checking for fallback email credentials...');
-          
+
           if (process.env.FALLBACK_EMAIL_USER && process.env.FALLBACK_EMAIL_PASS) {
             console.log('[EMAIL] Attempting fallback email delivery...');
             return await this.sendWithFallback(mailOptions);
           } else {
             console.log('[EMAIL] No fallback credentials available. Email delivery failed.');
-            this.logEmailContent(mailOptions);
-            return false; // Return false to indicate delivery failure
+            return { success: false, error: smtpError.message || "SMTP connection failed" };
           }
         }
-        
-        throw smtpError;
+
+        return { success: false, error: smtpError.message || "SMTP sending failed" };
       }
     } catch (error) {
       console.error('[EMAIL] Failed to send email via SMTP:', error);
-      return false;
+      return { success: false, error: (error as Error).message || "SMTP sending failed" };
     }
   }
 
-  private async sendWithFallback(mailOptions: any): Promise<boolean> {
+  private async sendWithFallback(mailOptions: any): Promise<SendEmailReport> {
     try {
       // Create new transporter with fallback credentials
       const fallbackTransporter = nodemailer.createTransport({
@@ -271,11 +311,11 @@ class EmailService {
       
       const result = await fallbackTransporter.sendMail(mailOptions);
       console.log('[EMAIL] Fallback email sent successfully:', result.messageId);
-      return true;
+      return { success: true };
     } catch (error) {
       console.error('[EMAIL] Fallback email also failed:', error);
       this.logEmailContent(mailOptions);
-      return false; // Return false to indicate delivery failure
+      return { success: false, error: (error as Error).message || "Fallback email failed" };
     }
   }
 

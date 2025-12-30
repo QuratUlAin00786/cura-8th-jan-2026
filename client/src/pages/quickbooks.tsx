@@ -859,10 +859,10 @@ export default function QuickBooks() {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-full-width">
       <Header title="QuickBooks Integration" subtitle="Manage your accounting synchronization and financial data integration" />
       
-      <div className="container mx-auto px-4 lg:px-6 py-6 max-w-7xl">
+      <div className="w-full px-4 lg:px-6 py-6">
       <ConnectionStatus />
 
       <Tabs defaultValue="overview" className="space-y-6">

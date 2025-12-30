@@ -9,7 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useToast } from "@/hooks/use-toast";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Trash2, Check } from "lucide-react";
 import SimpleAddItem from "./simple-add-item";
 
 interface InventoryItem {
@@ -39,6 +39,7 @@ export default function PurchaseOrderDialog({ open, onOpenChange, items }: Purch
   
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
+  const [createdPONumber, setCreatedPONumber] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     supplierId: 1, // Default supplier
     expectedDeliveryDate: "",
@@ -75,13 +76,19 @@ export default function PurchaseOrderDialog({ open, onOpenChange, items }: Purch
 
   const createPOMutation = useMutation({
     mutationFn: async (data: any) => {
-      return apiRequest("POST", "/api/inventory/purchase-orders", data);
+      const response = await apiRequest("POST", "/api/inventory/purchase-orders", data);
+      return response.json();
     },
-    onSuccess: () => {
-      setSuccessMessage("Purchase order created successfully");
+    onSuccess: (data: any) => {
+      const poNumber = data?.purchaseOrder?.poNumber;
+      setCreatedPONumber(poNumber || null);
+      setSuccessMessage(
+        poNumber
+          ? `Purchase order ${poNumber} created successfully`
+          : "Purchase order created successfully",
+      );
       setShowSuccessModal(true);
       queryClient.invalidateQueries({ queryKey: ["/api/inventory/purchase-orders"] });
-      onOpenChange(false);
       resetForm();
     },
     onError: (error: any) => {
@@ -391,9 +398,17 @@ export default function PurchaseOrderDialog({ open, onOpenChange, items }: Purch
           <DialogHeader>
             <DialogTitle className="text-xl font-bold text-green-600">Success</DialogTitle>
           </DialogHeader>
-          
-          <div className="py-4">
-            <p className="text-gray-700">{successMessage}</p>
+
+          <div className="flex flex-col items-center gap-3 py-4 text-center">
+            <span className="flex h-12 w-12 items-center justify-center rounded-full bg-emerald-100 text-emerald-600">
+              <Check className="h-6 w-6" />
+            </span>
+            <p className="text-lg font-semibold text-gray-900">
+              {createdPONumber
+                ? `Purchase order ${createdPONumber} created successfully`
+                : "Purchase order created successfully"}
+            </p>
+            <p className="text-sm text-gray-500">{successMessage}</p>
           </div>
 
           <div className="flex justify-end">
@@ -401,6 +416,7 @@ export default function PurchaseOrderDialog({ open, onOpenChange, items }: Purch
               onClick={() => {
                 setShowSuccessModal(false);
                 setSuccessMessage("");
+                setCreatedPONumber(null);
               }}
             >
               OK

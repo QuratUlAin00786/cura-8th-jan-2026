@@ -1,10 +1,10 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Calendar, Clock, User, Video, Stethoscope, Plus, ArrowRight, Edit, Search, X, Filter, FileText, MapPin } from "lucide-react";
+import { Calendar, Clock, User, Video, Stethoscope, Plus, ArrowRight, Edit, Search, X, Filter, FileText, MapPin, ChevronsUpDown } from "lucide-react";
 import { format, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay, isToday, isPast, isFuture, parseISO } from "date-fns";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { apiRequest, queryClient } from "@/lib/queryClient";
@@ -40,6 +40,7 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
   
   const { user } = useAuth();
   const { toast } = useToast();
+  const isAdmin = user?.role === "admin";
 
   // Fetch appointments for this doctor - backend automatically filters by logged-in user's role
   const { data: appointmentsData, isLoading } = useQuery({
@@ -62,12 +63,132 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
     enabled: !!user?.id,
   });
 
+  const nurseUserRecord = React.useMemo(() => {
+    if (!user || user.role !== "nurse" || !usersData || !Array.isArray(usersData)) {
+      return null;
+    }
+    return usersData.find((u: any) => u.email?.toLowerCase() === user.email?.toLowerCase());
+  }, [user, usersData]);
+
+  const nurseTitlePrefix = React.useMemo(() => {
+    if (!nurseUserRecord) return "Nurse";
+    const gender = (nurseUserRecord.gender || "").toLowerCase();
+    if (gender === "female") return "Miss/Mrs";
+    if (gender === "male") return "Mr";
+    return "Nurse";
+  }, [nurseUserRecord]);
+
   // Fetch patients
   const { data: patientsData, isLoading: patientsLoading } = useQuery({
     queryKey: ["/api/patients"],
     staleTime: 60000,
     enabled: !!user?.id,
   });
+
+  const { data: treatmentsList = [] } = useQuery({
+    queryKey: ["/api/pricing/treatments"],
+    staleTime: 60000,
+    enabled: !!user?.id && (isAdmin || isDoctorLike(user?.role)),
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/pricing/treatments");
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    },
+  });
+
+  const { data: consultationServices = [] } = useQuery({
+    queryKey: ["/api/pricing/doctors-fees"],
+    staleTime: 60000,
+    enabled: !!user?.id && (isAdmin || isDoctorLike(user?.role)),
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/pricing/doctors-fees");
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    },
+  });
+
+  const treatmentsMap = useMemo(() => {
+    const map = new Map<number, any>();
+    treatmentsList.forEach((treatment: any) => {
+      if (treatment?.id) {
+        map.set(treatment.id, treatment);
+      }
+    });
+    return map;
+  }, [treatmentsList]);
+
+  const consultationMap = useMemo(() => {
+    const map = new Map<number, any>();
+    consultationServices.forEach((service: any) => {
+      if (service?.id) {
+        map.set(service.id, service);
+      }
+    });
+    return map;
+  }, [consultationServices]);
+
+  const getAppointmentServiceInfo = (appointment: any) => {
+    if (!appointment) return null;
+    const treatmentId = appointment.treatmentId ?? appointment.treatment_id;
+    const consultationId = appointment.consultationId ?? appointment.consultation_id;
+    const type = appointment.appointmentType || appointment.type;
+
+    if (treatmentId) {
+      const treatment = treatmentsList.find((item: any) => item.id === treatmentId);
+      return {
+        name: treatment?.name || "Treatment",
+        color: treatment?.colorCode || "#10B981",
+      };
+    }
+
+    if (consultationId) {
+      const service = consultationMap.get(consultationId);
+      return {
+        name: service?.serviceName || "Consultation",
+        color: service?.colorCode || "#6366F1",
+      };
+    }
+
+    if (type) {
+      return {
+        name: type.charAt(0).toUpperCase() + type.slice(1),
+        color: "#6B7280",
+      };
+    }
+    return null;
+  };
+
+  const getAppointmentTypeBadgeInfo = (appointment: any) => {
+    if (!isAdmin || !appointment) return null;
+    if (appointment.appointmentType === "treatment" && appointment.treatmentId) {
+      const treatment = treatmentsMap.get(appointment.treatmentId);
+      return {
+        label: `Treatment: ${treatment?.name || "Treatment"}`,
+        color: treatment?.colorCode || "#10B981",
+      };
+    }
+    if (appointment.appointmentType === "consultation" && appointment.consultationId) {
+      const service = consultationMap.get(appointment.consultationId);
+      return {
+        label: `Consultation: ${service?.serviceName || "Consultation"}`,
+        color: service?.colorCode || "#6366F1",
+      };
+    }
+    return null;
+  };
+
+  const getAppointmentServiceLabel = (appointment: any) => {
+    if (!isAdmin || !appointment) return null;
+    if (appointment.appointmentType === "treatment" && appointment.treatmentId) {
+      const treatment = treatmentsMap.get(appointment.treatmentId);
+      return treatment?.name || "Treatment";
+    }
+    if (appointment.appointmentType === "consultation" && appointment.consultationId) {
+      const service = consultationMap.get(appointment.consultationId);
+      return service?.serviceName || "Consultation";
+    }
+    return null;
+  };
 
   // Cancel appointment mutation
   const cancelAppointmentMutation = useMutation({
@@ -182,10 +303,9 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
   // Categorize appointments into upcoming and past
   const categorizedAppointments = React.useMemo(() => {
     const now = new Date();
-    const upcoming = doctorAppointments.filter((apt: any) => {
-      const aptDate = new Date(apt.scheduledAt);
-      return isFuture(aptDate) || isSameDay(aptDate, now);
-    }).sort((a: any, b: any) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+    const upcoming = doctorAppointments
+      .filter((apt: any) => new Date(apt.scheduledAt).getTime() > now.getTime())
+      .sort((a: any, b: any) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
 
     const past = doctorAppointments.filter((apt: any) => {
       const aptDate = new Date(apt.scheduledAt);
@@ -285,6 +405,11 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
     return null;
   }, [nextAppointment, usersData]);
 
+  const nextAppointmentServiceInfo = React.useMemo(() => {
+    if (!nextAppointment) return null;
+    return getAppointmentServiceInfo(nextAppointment);
+  }, [nextAppointment, treatmentsList, consultationServices]);
+
   const weekStart = startOfWeek(selectedDate);
   const weekEnd = endOfWeek(selectedDate);
   const weekDays = eachDayOfInterval({ start: weekStart, end: weekEnd });
@@ -310,7 +435,11 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
           <Stethoscope className="h-6 w-6 text-blue-600" />
           <div>
             <h2 className="text-2xl font-bold text-blue-800">My Schedule</h2>
-            <p className="text-gray-600">Dr. {user?.firstName} {user?.lastName}</p>
+            <p className="text-gray-600">
+              {user?.role === "nurse"
+                ? `${nurseTitlePrefix} ${user?.firstName} ${user?.lastName}`
+                : `Dr. ${user?.firstName} ${user?.lastName}`}
+            </p>
           </div>
         </div>
         <div className="flex space-x-2">
@@ -546,7 +675,9 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
             <div className="space-y-3">
               {getAppointmentsForDate(selectedDate).map((appointment: any) => {
                 const patient = patientsData?.find((p: any) => p.id === appointment.patientId);
+                const serviceLabel = getAppointmentServiceLabel(appointment);
                 
+                const appointmentTypeBadge = getAppointmentTypeBadgeInfo(appointment);
                 return (
                   <Card key={appointment.id} className="border-l-4" style={{ borderLeftColor: statusColors[appointment.status as keyof typeof statusColors] }}>
                     <CardContent className="p-4">
@@ -559,8 +690,11 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
                             </div>
                             <div className="flex items-center space-x-2 mt-1">
                               <User className="h-4 w-4 text-gray-400" />
-                              <span className="text-sm font-medium">{getPatientName(appointment.patientId)}</span>
+                            <span className="text-sm font-medium">{getPatientName(appointment.patientId)}</span>
                             </div>
+                          {serviceLabel && (
+                            <p className="text-xs text-gray-500 mt-1">Service: {serviceLabel}</p>
+                          )}
                             {patient && (
                               <>
                                 {patient.patientId && (
@@ -584,12 +718,20 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
                         </div>
                         <div className="text-right">
                           <div className="font-medium">{appointment.title}</div>
-                          <Badge 
-                            style={{ backgroundColor: statusColors[appointment.status as keyof typeof statusColors] }}
-                            className="text-white"
-                          >
-                            {appointment.status.toUpperCase()}
-                          </Badge>
+                          <div className="flex flex-wrap justify-end gap-2 mt-2">
+                            <Badge 
+                              style={{ backgroundColor: statusColors[appointment.status as keyof typeof statusColors], color: "white" }}
+                            >
+                              {appointment.status.toUpperCase()}
+                            </Badge>
+                            {appointmentTypeBadge && (
+                              <Badge 
+                                style={{ backgroundColor: appointmentTypeBadge.color, color: "white" }}
+                              >
+                                {appointmentTypeBadge.label}
+                              </Badge>
+                            )}
+                          </div>
                         </div>
                       </div>
                       {appointment.description && (
@@ -679,10 +821,22 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
                   <User className="h-4 w-4 text-blue-600" />
                   <span>{nextAppointmentPatient ? `${nextAppointmentPatient.firstName} ${nextAppointmentPatient.lastName}` : 'N/A'}</span>
                 </div>
-                <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                  <FileText className="h-4 w-4 text-blue-600" />
-                  <span>{nextAppointment.type || 'N/A'}</span>
-                </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                      <FileText className="h-4 w-4 text-blue-600" />
+                      <span className="font-semibold">Appointment Type:</span>
+                      <span>{nextAppointment.appointmentType || nextAppointment.type || 'N/A'}</span>
+                    </div>
+                    {nextAppointmentServiceInfo && (
+                      <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                        <span
+                          className="inline-flex h-2 w-2 rounded-full border border-gray-300"
+                          style={{ backgroundColor: nextAppointmentServiceInfo.color }}
+                        />
+                        <span>Service: {nextAppointmentServiceInfo.name}</span>
+                      </div>
+                    )}
+                  </div>
                 <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
                   <MapPin className="h-4 w-4 text-blue-600" />
                   <span>{nextAppointment.location || 'N/A'}</span>
@@ -699,10 +853,15 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
                   <Stethoscope className="h-4 w-4 text-blue-600" />
                   <span>{nextAppointmentDoctor ? `${nextAppointmentDoctor.firstName} ${nextAppointmentDoctor.lastName}` : 'N/A'}</span>
                 </div>
-                <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                  <FileText className="h-4 w-4 text-blue-600" />
-                  <span>{nextAppointmentDoctor?.medicalSpecialtyCategory || nextAppointmentDoctor?.department || 'N/A'}</span>
-                </div>
+                {nextAppointmentServiceInfo && (
+                  <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                    <span
+                      className="inline-flex h-2 w-2 rounded-full border border-gray-300"
+                      style={{ backgroundColor: nextAppointmentServiceInfo.color }}
+                    />
+                    <span>Service: {nextAppointmentServiceInfo.name}</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -738,7 +897,7 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {filteredAppointments.map((appointment: any) => {
+          {filteredAppointments.map((appointment: any) => {
               const doctor = usersData?.find((u: any) => u.id === appointment.providerId);
               // Try multiple matching strategies to find the patient
               const patient = patientsData?.find((p: any) => 
@@ -749,7 +908,8 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
               );
               const createdBy = usersData?.find((u: any) => u.id === appointment.createdBy);
               
-              return (
+            const appointmentServiceInfo = getAppointmentServiceInfo(appointment);
+            return (
                 <Card 
                   key={appointment.id} 
                   className="border-l-4" 
@@ -798,9 +958,21 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
                           <User className="h-4 w-4 text-gray-400" />
                           <span>{patient ? `${patient.firstName} ${patient.lastName}` : getPatientName(appointment.patientId)}</span>
                         </div>
-                        <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                          <FileText className="h-4 w-4 text-gray-400" />
-                          <span>{appointment.type || 'N/A'}</span>
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                            <FileText className="h-4 w-4 text-gray-400" />
+                            <span className="font-semibold">Appointment Type:</span>
+                            <span>{appointment.appointmentType || appointment.type || 'N/A'}</span>
+                          </div>
+                          {appointmentServiceInfo && (
+                            <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                              <span
+                                className="inline-flex h-2 w-2 rounded-full border border-gray-300"
+                                style={{ backgroundColor: appointmentServiceInfo.color }}
+                              />
+                              <span>Service: {appointmentServiceInfo.name}</span>
+                            </div>
+                          )}
                         </div>
                         <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
                           <MapPin className="h-4 w-4 text-gray-400" />
@@ -828,10 +1000,6 @@ export default function DoctorAppointments({ onNewAppointment }: { onNewAppointm
                             </Badge>
                           </div>
                         )}
-                        <div className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
-                          <FileText className="h-4 w-4 text-gray-400" />
-                          <span>{doctor?.medicalSpecialtyCategory || doctor?.department || 'N/A'}</span>
-                        </div>
                       </div>
                     </div>
 

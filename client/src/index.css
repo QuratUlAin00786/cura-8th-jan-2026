@@ -342,6 +342,13 @@ button[data-testid="delete-customer-button"] {
   color: #e5e7eb !important; /* Brighter gray for dark mode */
 }
 
+.page-full-width {
+  width: 100% !important;
+  max-width: none !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
 @layer base {
   * {
     @apply border-border;

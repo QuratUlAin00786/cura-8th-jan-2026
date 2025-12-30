@@ -27,6 +27,10 @@ export async function tenantMiddleware(req: TenantRequest, res: Response, next: 
       return next();
     }
     
+    if (req.path.startsWith("/forms/share/")) {
+      console.log(`[TENANT-MIDDLEWARE] Skipping tenant lookup for share endpoint: ${req.path}`);
+      return next();
+    }
     console.log(`[TENANT-MIDDLEWARE] Processing request: ${req.method} ${req.path} ${req.url}`);
     
     // Skip tenant middleware for static assets and development files to prevent DB calls
@@ -40,6 +44,7 @@ export async function tenantMiddleware(req: TenantRequest, res: Response, next: 
       console.log(`[TENANT-MIDDLEWARE] Skipping static path: ${req.path}`);
       return next();
     }
+
     
     // Path is already stripped by Express mounting at /api, so we process all paths
     console.log(`[TENANT-MIDDLEWARE] Processing API path: ${req.path} (original URL: ${req.originalUrl})`);
@@ -133,6 +138,11 @@ export async function tenantMiddleware(req: TenantRequest, res: Response, next: 
 
 export async function authMiddleware(req: TenantRequest, res: Response, next: NextFunction) {
   try {
+    if (req.path.startsWith("/forms/share/")) {
+      console.log(`[AUTH-MIDDLEWARE] Skipping auth for share endpoint: ${req.path}`);
+      return next();
+    }
+
     // Skip authentication for file view endpoints (handles their own token validation with FILE_SECRET)
     if (req.path.startsWith('/files/view/') || req.path.startsWith('files/view/') ||
         req.path.startsWith('/imaging-files/view/') || req.path.startsWith('imaging-files/view/') ||

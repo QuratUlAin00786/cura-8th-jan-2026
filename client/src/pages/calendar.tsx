@@ -26,6 +26,49 @@ import { loadStripe } from "@stripe/stripe-js";
 
 const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLIC_KEY || '');
 
+type BookingServiceInfo = {
+  name: string;
+  price?: string;
+  amount?: string;
+  currency?: string;
+  code?: string;
+  color?: string;
+};
+
+const formatDecimalString = (value?: number | string | null): string => {
+  if (value === undefined || value === null || value === "") {
+    return "0.00";
+  }
+  const numeric = typeof value === "string" ? Number(value) : value;
+  if (typeof numeric !== "number" || Number.isNaN(numeric)) {
+    return "0.00";
+  }
+  return numeric.toFixed(2);
+};
+
+const buildInvoiceDefaults = (appointment: any, serviceInfo: BookingServiceInfo | null) => {
+  const referenceDate = appointment?.scheduledAt ? new Date(appointment.scheduledAt) : new Date();
+  const serviceDate = referenceDate.toISOString().split("T")[0];
+  const invoiceDate = new Date().toISOString().split("T")[0];
+  const dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+  const amount = serviceInfo?.amount || "50.00";
+  const serviceDescription =
+    serviceInfo?.name || appointment?.title || "General Consultation";
+  const serviceCode = serviceInfo?.code || "CONS-001";
+
+  return {
+    serviceDate,
+    invoiceDate,
+    dueDate,
+    serviceCode,
+    serviceDescription,
+    amount,
+    insuranceProvider: "None (Patient Self-Pay)",
+    notes: "",
+    paymentMethod: "Online Payment",
+  };
+};
+
 // Stripe Payment Form Component
 function StripePaymentForm({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) {
   const stripe = useStripe();
@@ -380,6 +423,96 @@ const pharmacistSubcategories = [
 export default function CalendarPage() {
   const { user } = useAuth();
   const { canCreate, canEdit, canDelete } = useRolePermissions();
+  const isDoctor = isDoctorLike(user?.role);
+  const isPatient = user?.role === "patient";
+  const { data: treatmentsList = [], isLoading: isTreatmentsLoading } = useQuery({
+    queryKey: ["/api/pricing/treatments"],
+    staleTime: 60000,
+    enabled: isDoctor || isPatient,
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/pricing/treatments");
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    },
+  });
+  const { data: consultationServices = [], isLoading: isConsultationsLoading } = useQuery({
+    queryKey: ["/api/pricing/doctors-fees"],
+    staleTime: 60000,
+    enabled: isDoctor || isPatient,
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/pricing/doctors-fees");
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    },
+  });
+
+  const treatmentsMap = useMemo(() => {
+    const map = new Map<number, any>();
+    treatmentsList.forEach((treatment: any) => {
+      if (treatment?.id) {
+        map.set(treatment.id, treatment);
+      }
+    });
+    return map;
+  }, [treatmentsList]);
+
+  const consultationMap = useMemo(() => {
+    const map = new Map<number, any>();
+    consultationServices.forEach((service: any) => {
+      if (service?.id) {
+        map.set(service.id, service);
+      }
+    });
+    return map;
+  }, [consultationServices]);
+
+const getBookingServiceInfo = (appointment: any): BookingServiceInfo | null => {
+    if (!appointment) return null;
+    if (appointment.appointmentType === "treatment" && appointment.treatmentId) {
+      const treatment = treatmentsMap.get(appointment.treatmentId);
+      if (!treatment) return null;
+      const amount = formatDecimalString(treatment.basePrice);
+      const priceLabel = treatment.currency ? `${treatment.currency} ${amount}` : amount;
+      const code =
+        treatment.metadata?.serviceCode ||
+        treatment.metadata?.code ||
+        `TRT-${String(treatment.id ?? 0).padStart(3, "0")}`;
+      return {
+        name: treatment.name || "Treatment",
+        price: priceLabel,
+        amount,
+        currency: treatment.currency,
+        code,
+        color: treatment.colorCode || "#10B981",
+      };
+    }
+    if (appointment.appointmentType === "consultation" && appointment.consultationId) {
+      const service = consultationMap.get(appointment.consultationId);
+      if (!service) return null;
+      const amount = formatDecimalString(service.basePrice);
+      const priceLabel = service.currency ? `${service.currency} ${amount}` : amount;
+      const code =
+        service.serviceCode ||
+        `CONS-${String(service.id ?? 0).padStart(3, "0")}`;
+      return {
+        name: service.serviceName || "Consultation",
+        price: priceLabel,
+        amount,
+        currency: service.currency,
+        code,
+        color: service.colorCode || "#6366F1",
+      };
+    }
+    return null;
+  };
+
+const getAppointmentTypeLabel = (appointment: any): string => {
+  if (!appointment) return "Consultation";
+  const rawType = (appointment.appointmentType || appointment.type || "consultation").toLowerCase();
+  if (rawType === "treatment") return "Treatment";
+  if (rawType === "consultation") return "Consultation";
+  return rawType.charAt(0).toUpperCase() + rawType.slice(1);
+};
   const [selectedDoctor, setSelectedDoctor] = useState<any>(null);
   const [showNewAppointmentModal, setShowNewAppointmentModal] = useState(false);
   const [selectedSpecialty, setSelectedSpecialty] = useState("");
@@ -398,6 +531,15 @@ export default function CalendarPage() {
   const [openProviderCombo, setOpenProviderCombo] = useState(false);
   const [selectedMedicalSpecialty, setSelectedMedicalSpecialty] = useState<string>("");
   
+  const resetDoctorAppointmentServiceSelection = () => {
+    setDoctorAppointmentType("");
+    setDoctorAppointmentSelectedTreatment(null);
+    setDoctorAppointmentSelectedConsultation(null);
+    setDoctorAppointmentTypeError("");
+    setDoctorTreatmentSelectionError("");
+    setDoctorConsultationSelectionError("");
+  };
+
   // Validation error states for patient booking
   const [roleError, setRoleError] = useState<string>("");
   const [providerError, setProviderError] = useState<string>("");
@@ -437,6 +579,15 @@ export default function CalendarPage() {
     location: "",
     isVirtual: false
   });
+  const [doctorAppointmentType, setDoctorAppointmentType] = useState<"consultation" | "treatment" | "">("");
+  const [doctorAppointmentSelectedTreatment, setDoctorAppointmentSelectedTreatment] = useState<any>(null);
+  const [doctorAppointmentSelectedConsultation, setDoctorAppointmentSelectedConsultation] = useState<any>(null);
+  const [doctorAppointmentTypeError, setDoctorAppointmentTypeError] = useState<string>("");
+  const [doctorTreatmentSelectionError, setDoctorTreatmentSelectionError] = useState<string>("");
+  const [doctorConsultationSelectionError, setDoctorConsultationSelectionError] = useState<string>("");
+  const [openDoctorAppointmentTypeCombo, setOpenDoctorAppointmentTypeCombo] = useState(false);
+  const [openDoctorTreatmentCombo, setOpenDoctorTreatmentCombo] = useState(false);
+  const [openDoctorConsultationCombo, setOpenDoctorConsultationCombo] = useState(false);
   
   // Confirmation modal states for patient users
   const [showConfirmationModal, setShowConfirmationModal] = useState(false);
@@ -467,6 +618,11 @@ export default function CalendarPage() {
     notes: "",
     paymentMethod: "Online Payment"
   });
+
+  const bookingSummaryServiceInfo = useMemo(
+    () => getBookingServiceInfo(pendingAppointmentData),
+    [pendingAppointmentData, treatmentsMap, consultationMap],
+  );
   
   const [location] = useLocation();
   const { toast} = useToast();
@@ -1507,6 +1663,12 @@ export default function CalendarPage() {
         location: "",
         isVirtual: false
       });
+      setDoctorAppointmentType("");
+      setDoctorAppointmentSelectedTreatment(null);
+      setDoctorAppointmentSelectedConsultation(null);
+      setDoctorAppointmentTypeError("");
+      setDoctorTreatmentSelectionError("");
+      setDoctorConsultationSelectionError("");
       setInvoiceForm({
         serviceDate: new Date().toISOString().split('T')[0],
         invoiceDate: new Date().toISOString().split('T')[0],
@@ -1566,6 +1728,50 @@ export default function CalendarPage() {
       setShowInvoiceSummary(false);
       setShowConfirmationModal(false);
       setShowNewAppointmentModal(false);
+    },
+  });
+
+  const createDoctorAppointmentMutation = useMutation({
+    mutationFn: async (appointmentData: any) => {
+      const response = await apiRequest("POST", "/api/appointments", {
+        ...appointmentData,
+        createdBy: user?.id,
+      });
+      return response.json();
+    },
+    onSuccess: (appointment) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments", "doctor", user?.id] });
+      setShowSuccessModal(true);
+      setShowNewAppointmentModal(false);
+      setSelectedDoctor(null);
+      setSelectedDate(undefined);
+      setSelectedTimeSlot("");
+      setBookingForm({
+        patientId: "",
+        title: "",
+        description: "",
+        scheduledAt: "",
+        duration: "30",
+        type: "consultation",
+        location: "",
+        isVirtual: false,
+      });
+      resetDoctorAppointmentServiceSelection();
+      setSelectedRole("");
+      setSelectedProviderId("");
+      setSelectedDuration(30);
+      setSelectedMedicalSpecialty("");
+      setPendingAppointmentData(null);
+      setShowConfirmationModal(false);
+    },
+    onError: (error: any) => {
+      console.error("Doctor appointment error:", error);
+      toast({
+        title: "Booking Failed",
+        description: "Failed to create appointment. Please try again.",
+        variant: "destructive",
+      });
     },
   });
 
@@ -1633,7 +1839,34 @@ export default function CalendarPage() {
       }
     }
 
+    if (isDoctorLike(user?.role) || user?.role === "patient") {
+      if (!doctorAppointmentType) {
+        setDoctorAppointmentTypeError("Please select Appointment Type.");
+        return;
+      }
+      if (doctorAppointmentType === "treatment" && !doctorAppointmentSelectedTreatment) {
+        setDoctorTreatmentSelectionError("Please select a treatment.");
+        return;
+      }
+      if (doctorAppointmentType === "consultation" && !doctorAppointmentSelectedConsultation) {
+        setDoctorConsultationSelectionError("Please select a consultation.");
+        return;
+      }
+    }
+
     // Prepare appointment data
+    const normalizedDoctorAppointmentType = isDoctorLike(user?.role)
+      ? doctorAppointmentType || "consultation"
+      : bookingForm.type || "consultation";
+    const treatmentId =
+      normalizedDoctorAppointmentType === "treatment"
+        ? doctorAppointmentSelectedTreatment?.id || null
+        : null;
+    const consultationId =
+      normalizedDoctorAppointmentType === "consultation"
+        ? doctorAppointmentSelectedConsultation?.id || null
+        : null;
+
     const appointmentData = {
       ...bookingForm,
       patientId: patientId,
@@ -1642,6 +1875,11 @@ export default function CalendarPage() {
       location: bookingForm.location || `${selectedDoctor.department} Department`,
       duration: parseInt(bookingForm.duration)
     };
+    if (isDoctorLike(user?.role)) {
+      appointmentData.appointmentType = normalizedDoctorAppointmentType;
+      appointmentData.treatmentId = treatmentId;
+      appointmentData.consultationId = consultationId;
+    }
 
     // Find patient to get their name for the invoice
     const patient = patients.find((p: any) => 
@@ -1661,37 +1899,46 @@ export default function CalendarPage() {
     }
 
     const patientName = `${patient.firstName} ${patient.lastName}`;
-    const defaultAmount = "50.00";
+    const serviceInfo = getBookingServiceInfo(patientAppointmentData);
+    const invoiceDefaults = buildInvoiceDefaults(patientAppointmentData, serviceInfo);
     
-    // Create default invoice data
+    // Create invoice data populated with selected service details
     const invoiceData = {
       patientId: patientId.toString(),
       patientName: patientName,
       nhsNumber: patient.nhsNumber || undefined,
-      dateOfService: bookingForm.scheduledAt ? new Date(bookingForm.scheduledAt).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
-      invoiceDate: new Date().toISOString().split('T')[0],
-      dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+      dateOfService: invoiceDefaults.serviceDate,
+      invoiceDate: invoiceDefaults.invoiceDate,
+      dueDate: invoiceDefaults.dueDate,
       status: "draft",
       invoiceType: "payment",
-      paymentMethod: "Cash",
-      subtotal: defaultAmount,
+      paymentMethod: invoiceDefaults.paymentMethod,
+      subtotal: invoiceDefaults.amount,
       tax: "0",
       discount: "0",
-      totalAmount: defaultAmount,
-      paidAmount: "0",
+      totalAmount: invoiceDefaults.amount,
+      paidAmount: invoiceDefaults.paymentMethod === "Cash" ? invoiceDefaults.amount : "0",
       items: [
         {
-          code: "CONS-001",
-          description: bookingForm.title || `${bookingForm.type} with ${selectedDoctor.firstName} ${selectedDoctor.lastName}`,
+          code: invoiceDefaults.serviceCode,
+          description: invoiceDefaults.serviceDescription,
           quantity: 1,
-          unitPrice: parseFloat(defaultAmount),
-          total: parseFloat(defaultAmount)
+          unitPrice: parseFloat(invoiceDefaults.amount),
+          total: parseFloat(invoiceDefaults.amount)
         }
       ],
-      insuranceProvider: undefined,
-      notes: `Auto-generated invoice for appointment`
+      insuranceProvider: invoiceDefaults.insuranceProvider,
+      notes: invoiceDefaults.notes
     };
     
+    if (isDoctorLike(user?.role)) {
+      createDoctorAppointmentMutation.mutate({
+        ...appointmentData,
+        referralType: doctorAppointmentType,
+      });
+      return;
+    }
+
     // Automatically create both appointment and invoice
     createAppointmentAndInvoiceMutation.mutate({
       appointmentData,
@@ -2267,186 +2514,6 @@ export default function CalendarPage() {
         )}
 
 
-        {/* Booking Form */}
-        {selectedDoctor && !showNewAppointmentModal && !showConfirmationModal && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-            <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-              <div className="p-6">
-                <div className="flex items-center justify-between mb-4">
-                  <h2 className="text-xl font-bold text-gray-900">
-                    Book Appointment with {selectedDoctor.firstName} {selectedDoctor.lastName}
-                  </h2>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => setSelectedDoctor(null)}
-                  >
-                    <X className="h-4 w-4" />
-                  </Button>
-                </div>
-           
-                <div className="space-y-2">
-                  <Label className="text-sm font-medium">Date & Time *</Label>
-                  
-                  {/* Select Date */}
-                  <div className="mt-2 space-y-4">
-                      <div>
-                        <Label className="text-sm font-medium">Select Date</Label>
-                        <CalendarComponent
-                          mode="single"
-                          selected={selectedDate}
-                          onSelect={(date) => {
-                            setSelectedDate(date);
-                            // Update form with selected date and current time slotBooked by
-                            if (date && selectedTimeSlot) {
-                              // Convert time slot to 24-hour format for consistent datetime string
-                              const time24 = timeSlotTo24Hour(selectedTimeSlot);
-                              const dateTime = `${format(date, 'yyyy-MM-dd')}T${time24}:00`;
-                              setBookingForm(prev => ({ ...prev, scheduledAt: dateTime }));
-                            }
-                          }}
-                          disabled={(date) => {
-                            // Disable past dates
-                            if (isBefore(date, startOfDay(new Date()))) return true;
-                            // Disable dates beyond 3 months
-                            if (isAfter(date, addMonths(new Date(), 3))) return true;
-                            return false;
-                          }}
-                          className="rounded-md border mt-1"
-                        />
-                      </div>
-
-                      {/* Select Time Slot */}
-                      {selectedDate && (
-                        <div>
-                          <Label className="text-sm font-medium">Select Time Slot</Label>
-                          {timeSlotError && (
-                            <div className="mb-2 p-2 bg-red-50 border border-red-200 rounded-md">
-                              <p className="text-sm text-red-600">{timeSlotError}</p>
-                            </div>
-                          )}
-                          <div className="grid grid-cols-3 gap-2 mt-2 max-h-64 overflow-y-auto">
-                            {PREDEFINED_TIME_SLOTS.map((timeSlot) => {
-                              const isAvailable = timeSlotAvailability[timeSlot] !== false;
-                              const isSelected = selectedTimeSlot === timeSlot;
-                              
-                              return (
-                                <Button
-                                  key={timeSlot}
-                                  type="button"
-                                  variant={isSelected ? "default" : "outline"}
-                                  size="sm"
-                                  disabled={!isAvailable}
-                                  onClick={() => {
-                                    setSelectedTimeSlot(timeSlot);
-                                    // Update form with selected date and time
-                                    if (selectedDate) {
-                                      // Convert time slot to 24-hour format for consistent datetime string
-                                      const time24 = timeSlotTo24Hour(timeSlot);
-                                      const dateTime = `${format(selectedDate, 'yyyy-MM-dd')}T${time24}:00`;
-                                      setBookingForm(prev => ({ ...prev, scheduledAt: dateTime }));
-                                    }
-                                  }}
-                                  className={`
-                                    ${!isAvailable 
-                                      ? "bg-gray-300 text-gray-500 cursor-not-allowed" 
-                                      : isSelected
-                                        ? "bg-primary text-primary-foreground"
-                                        : "bg-green-100 text-green-800 hover:bg-green-200 border-green-300"
-                                    }
-                                  `}
-                                >
-                                  {format(new Date(`2000-01-01T${timeSlot}:00`), 'h:mm a')}
-                                </Button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                </div>
-                
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div>
-                    <Label htmlFor="type">Appointment Type</Label>
-                    <Select value={bookingForm.type} onValueChange={(value) => setBookingForm(prev => ({ ...prev, type: value }))}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="consultation">Consultation</SelectItem>
-                        <SelectItem value="follow_up">Follow-up</SelectItem>
-                        <SelectItem value="check_up">Check-up</SelectItem>
-                        <SelectItem value="procedure">Procedure</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  
-                  <div>
-                    <Label htmlFor="duration">Duration (minutes)</Label>
-                    <Select value={bookingForm.duration} onValueChange={(value) => setBookingForm(prev => ({ ...prev, duration: value }))}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="15">15 minutes</SelectItem>
-                        <SelectItem value="30">30 minutes</SelectItem>
-                        <SelectItem value="45">45 minutes</SelectItem>
-                        <SelectItem value="60">60 minutes</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  
-                  <div className="md:col-span-2">
-                    <Label htmlFor="title">Title (optional)</Label>
-                    <Input
-                      id="title"
-                      placeholder="Enter appointment title"
-                      value={bookingForm.title}
-                      onChange={(e) => setBookingForm(prev => ({ ...prev, title: e.target.value }))}
-                    />
-                  </div>
-                  
-                  <div className="md:col-span-2">
-                    <Label htmlFor="description">Description</Label>
-                    <Textarea
-                      id="description"
-                      placeholder="Enter appointment description or notes"
-                      value={bookingForm.description}
-                      onChange={(e) => setBookingForm(prev => ({ ...prev, description: e.target.value }))}
-                    />
-                  </div>
-                  
-                  <div className="md:col-span-2">
-                    <Label htmlFor="location">Location</Label>
-                    <Input
-                      id="location"
-                      placeholder="Room or department location"
-                      value={bookingForm.location}
-                      onChange={(e) => setBookingForm(prev => ({ ...prev, location: e.target.value }))}
-                    />
-                  </div>
-                </div>
-                
-                <div className="flex justify-end gap-2 mt-6">
-                  <Button
-                    variant="outline"
-                    onClick={() => setSelectedDoctor(null)}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    onClick={handleBookAppointment}
-                  >
-                    <Clock className="h-4 w-4 mr-2" />
-                    Book Appointment
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
         {/* New Appointment Modal */}
         {showNewAppointmentModal && (
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -2471,6 +2538,12 @@ export default function CalendarPage() {
                       setSelectedProviderId("");
                       setSelectedDuration(30);
                       setSelectedMedicalSpecialty("");
+                    setDoctorAppointmentType("");
+                    setDoctorAppointmentSelectedTreatment(null);
+                    setDoctorAppointmentSelectedConsultation(null);
+                    setDoctorAppointmentTypeError("");
+                    setDoctorTreatmentSelectionError("");
+                    setDoctorConsultationSelectionError("");
                     }}
                     data-testid="button-close-modal"
                   >
@@ -2616,6 +2689,9 @@ export default function CalendarPage() {
                               <SelectItem value="15">15 minutes</SelectItem>
                               <SelectItem value="30">30 minutes</SelectItem>
                               <SelectItem value="60">60 minutes</SelectItem>
+                              <SelectItem value="90">90 minutes</SelectItem>
+                              <SelectItem value="120">120 minutes (2 hours)</SelectItem>
+                              <SelectItem value="180">180 minutes (3 hours)</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
@@ -2720,7 +2796,198 @@ export default function CalendarPage() {
                       )}
                     </div>
 
-                    {/* Row 2: Select Date | Select Time Slot */}
+                    {/* Row 2: Appointment Type + Treatment/Consultation */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <Label className="text-sm font-medium text-gray-900 dark:text-white">Appointment Type</Label>
+                        <Popover open={openDoctorAppointmentTypeCombo} onOpenChange={setOpenDoctorAppointmentTypeCombo}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              role="combobox"
+                              aria-expanded={openDoctorAppointmentTypeCombo}
+                              className="w-full justify-between mt-1"
+                              data-testid="select-patient-appointment-type"
+                            >
+                              {doctorAppointmentType
+                                ? doctorAppointmentType.charAt(0).toUpperCase() + doctorAppointmentType.slice(1)
+                                : "Select an appointment type"}
+                              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-full p-0" align="start">
+                            <Command>
+                              <CommandInput placeholder="Search appointment type..." />
+                              <CommandList>
+                                <CommandEmpty>No type found.</CommandEmpty>
+                                <CommandGroup>
+                                  {["consultation", "treatment"].map((type) => (
+                                    <CommandItem
+                                      key={type}
+                                      value={type}
+                                      onSelect={(value) => {
+                                        const normalized = value as "consultation" | "treatment";
+                                        setDoctorAppointmentType(normalized);
+                                        setDoctorAppointmentSelectedTreatment(null);
+                                        setDoctorAppointmentSelectedConsultation(null);
+                                        setDoctorAppointmentTypeError("");
+                                        setDoctorTreatmentSelectionError("");
+                                        setDoctorConsultationSelectionError("");
+                                        setOpenDoctorAppointmentTypeCombo(false);
+                                      }}
+                                    >
+                                      <Check
+                                        className={`mr-2 h-4 w-4 ${
+                                          doctorAppointmentType === type ? "opacity-100" : "opacity-0"
+                                        }`}
+                                      />
+                                      {type.charAt(0).toUpperCase() + type.slice(1)}
+                                    </CommandItem>
+                                  ))}
+                                </CommandGroup>
+                              </CommandList>
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
+                        {doctorAppointmentTypeError && (
+                          <p className="text-red-500 text-xs mt-1">{doctorAppointmentTypeError}</p>
+                        )}
+                      </div>
+
+                      <div>
+                        {doctorAppointmentType === "treatment" && (
+                          <>
+                            <Label className="text-sm font-medium text-gray-900 dark:text-white">Select Treatment</Label>
+                            <Popover open={openDoctorTreatmentCombo} onOpenChange={setOpenDoctorTreatmentCombo}>
+                              <PopoverTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  role="combobox"
+                                  aria-expanded={openDoctorTreatmentCombo}
+                                  className="w-full justify-between mt-1"
+                                  data-testid="select-patient-treatment"
+                                >
+                                  {doctorAppointmentSelectedTreatment ? doctorAppointmentSelectedTreatment.name : "Select a treatment"}
+                                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-full p-0" align="start">
+                                <Command>
+                                  <CommandInput placeholder="Search treatments..." />
+                                  <CommandList>
+                                    <CommandEmpty>No treatments found.</CommandEmpty>
+                                    <CommandGroup>
+                                      {treatmentsList.map((treatment: any) => (
+                                        <CommandItem
+                                          key={treatment.id}
+                                          value={treatment.id.toString()}
+                                          onSelect={() => {
+                                            setDoctorAppointmentSelectedTreatment(treatment);
+                                            setDoctorTreatmentSelectionError("");
+                                            setOpenDoctorTreatmentCombo(false);
+                                          }}
+                                        >
+                                          <div className="flex items-center gap-2 w-full">
+                                            <span
+                                              className="inline-flex h-3 w-3 rounded-full border border-gray-300"
+                                              style={{ backgroundColor: treatment.colorCode || "#D1D5DB" }}
+                                            />
+                                            <span className="flex-1 text-left">{treatment.name}</span>
+                                            <span className="text-xs text-gray-500">
+                                              {treatment.currency} {treatment.basePrice}
+                                            </span>
+                                          </div>
+                                        </CommandItem>
+                                      ))}
+                                    </CommandGroup>
+                                  </CommandList>
+                                </Command>
+                              </PopoverContent>
+                            </Popover>
+                            {doctorAppointmentSelectedTreatment && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="mt-1 px-0 text-blue-600"
+                                onClick={() => setDoctorAppointmentSelectedTreatment(null)}
+                              >
+                                Clear selection
+                              </Button>
+                            )}
+                            {doctorTreatmentSelectionError && (
+                              <p className="text-red-500 text-xs mt-1">{doctorTreatmentSelectionError}</p>
+                            )}
+                          </>
+                        )}
+                        {doctorAppointmentType === "consultation" && (
+                          <>
+                            <Label className="text-sm font-medium text-gray-900 dark:text-white">Select Consultation</Label>
+                            <Popover open={openDoctorConsultationCombo} onOpenChange={setOpenDoctorConsultationCombo}>
+                              <PopoverTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  role="combobox"
+                                  aria-expanded={openDoctorConsultationCombo}
+                                  className="w-full justify-between mt-1"
+                                  data-testid="select-patient-consultation"
+                                >
+                                  {doctorAppointmentSelectedConsultation ? doctorAppointmentSelectedConsultation.serviceName : "Select a consultation"}
+                                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-full p-0" align="start">
+                                <Command>
+                                  <CommandInput placeholder="Search consultation..." />
+                                  <CommandList>
+                                    <CommandEmpty>No consultations found.</CommandEmpty>
+                                    <CommandGroup>
+                                      {consultationServices.map((service: any) => (
+                                        <CommandItem
+                                          key={service.id}
+                                          value={service.id.toString()}
+                                          onSelect={() => {
+                                            setDoctorAppointmentSelectedConsultation(service);
+                                            setDoctorConsultationSelectionError("");
+                                            setOpenDoctorConsultationCombo(false);
+                                          }}
+                                        >
+                                          <div className="flex items-center gap-2 w-full">
+                                            <span className="flex-1 text-left">{service.serviceName}</span>
+                                            <span className="text-xs text-gray-500">
+                                              {service.currency} {service.basePrice}
+                                            </span>
+                                          </div>
+                                        </CommandItem>
+                                      ))}
+                                    </CommandGroup>
+                                  </CommandList>
+                                </Command>
+                              </PopoverContent>
+                            </Popover>
+                            {doctorAppointmentSelectedConsultation && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="mt-1 px-0 text-blue-600"
+                                onClick={() => setDoctorAppointmentSelectedConsultation(null)}
+                              >
+                                Clear selection
+                              </Button>
+                            )}
+                            {doctorConsultationSelectionError && (
+                              <p className="text-red-500 text-xs mt-1">{doctorConsultationSelectionError}</p>
+                            )}
+                          </>
+                        )}
+                        {!doctorAppointmentType && (
+                          <p className="text-xs text-gray-500 mt-2">
+                            Select an appointment type to pick a treatment or consultation.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Row 3: Select Date | Select Time Slot */}
                     <div className="grid gap-6 lg:grid-cols-2">
                       {/* Column 1: Select Date */}
                       <div>
@@ -3031,6 +3298,9 @@ export default function CalendarPage() {
                               <SelectItem value="15">15 minutes</SelectItem>
                               <SelectItem value="30">30 minutes</SelectItem>
                               <SelectItem value="60">60 minutes</SelectItem>
+                              <SelectItem value="90">90 minutes</SelectItem>
+                          <SelectItem value="120">120 minutes (2 hours)</SelectItem>
+                          <SelectItem value="180">180 minutes (3 hours)</SelectItem>
                             </SelectContent>
                           </Select>
                         </div>
@@ -3088,6 +3358,197 @@ export default function CalendarPage() {
                             </CardContent>
                           </Card>
                         </div>
+                      </div>
+                    </div>
+
+                    {/* Row 2: Appointment Type + Treatment/Consultation */}
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <Label className="text-sm font-medium text-gray-900 dark:text-white">Appointment Type</Label>
+                        <Popover open={openDoctorAppointmentTypeCombo} onOpenChange={setOpenDoctorAppointmentTypeCombo}>
+                          <PopoverTrigger asChild>
+                            <Button
+                              variant="outline"
+                              role="combobox"
+                              aria-expanded={openDoctorAppointmentTypeCombo}
+                              className="w-full justify-between mt-1"
+                              data-testid="select-doctor-appointment-type"
+                            >
+                              {doctorAppointmentType
+                                ? doctorAppointmentType.charAt(0).toUpperCase() + doctorAppointmentType.slice(1)
+                                : "Select an appointment type"}
+                              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                            </Button>
+                          </PopoverTrigger>
+                          <PopoverContent className="w-full p-0" align="start">
+                            <Command>
+                              <CommandInput placeholder="Search appointment type..." />
+                              <CommandList>
+                                <CommandEmpty>No type found.</CommandEmpty>
+                                <CommandGroup>
+                                  {["consultation", "treatment"].map((type) => (
+                                    <CommandItem
+                                      key={type}
+                                      value={type}
+                                      onSelect={(value) => {
+                                        const normalized = value as "consultation" | "treatment";
+                                        setDoctorAppointmentType(normalized);
+                                        setDoctorAppointmentSelectedTreatment(null);
+                                        setDoctorAppointmentSelectedConsultation(null);
+                                        setDoctorAppointmentTypeError("");
+                                        setDoctorTreatmentSelectionError("");
+                                        setDoctorConsultationSelectionError("");
+                                        setOpenDoctorAppointmentTypeCombo(false);
+                                      }}
+                                    >
+                                      <Check
+                                        className={`mr-2 h-4 w-4 ${
+                                          doctorAppointmentType === type ? "opacity-100" : "opacity-0"
+                                        }`}
+                                      />
+                                      {type.charAt(0).toUpperCase() + type.slice(1)}
+                                    </CommandItem>
+                                  ))}
+                                </CommandGroup>
+                              </CommandList>
+                            </Command>
+                          </PopoverContent>
+                        </Popover>
+                        {doctorAppointmentTypeError && (
+                          <p className="text-red-500 text-xs mt-1">{doctorAppointmentTypeError}</p>
+                        )}
+                      </div>
+
+                      <div>
+                        {doctorAppointmentType === "treatment" && (
+                          <>
+                            <Label className="text-sm font-medium text-gray-900 dark:text-white">Select Treatment</Label>
+                            <Popover open={openDoctorTreatmentCombo} onOpenChange={setOpenDoctorTreatmentCombo}>
+                              <PopoverTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  role="combobox"
+                                  aria-expanded={openDoctorTreatmentCombo}
+                                  className="w-full justify-between mt-1"
+                                  data-testid="select-doctor-treatment"
+                                >
+                                  {doctorAppointmentSelectedTreatment ? doctorAppointmentSelectedTreatment.name : "Select a treatment"}
+                                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-full p-0" align="start">
+                                <Command>
+                                  <CommandInput placeholder="Search treatments..." />
+                                  <CommandList>
+                                    <CommandEmpty>No treatments found.</CommandEmpty>
+                                    <CommandGroup>
+                                      {treatmentsList.map((treatment: any) => (
+                                        <CommandItem
+                                          key={treatment.id}
+                                          value={treatment.id.toString()}
+                                          onSelect={() => {
+                                            setDoctorAppointmentSelectedTreatment(treatment);
+                                            setDoctorTreatmentSelectionError("");
+                                            setOpenDoctorTreatmentCombo(false);
+                                          }}
+                                        >
+                                          <div className="flex items-center gap-2 w-full">
+                                            <span
+                                              className="inline-flex h-3 w-3 rounded-full border border-gray-300"
+                                              style={{ backgroundColor: treatment.colorCode || "#D1D5DB" }}
+                                            />
+                                            <span className="flex-1 text-left">{treatment.name}</span>
+                                            <span className="text-xs text-gray-500">
+                                              {treatment.currency} {treatment.basePrice}
+                                            </span>
+                                          </div>
+                                        </CommandItem>
+                                      ))}
+                                    </CommandGroup>
+                                  </CommandList>
+                                </Command>
+                              </PopoverContent>
+                            </Popover>
+                            {doctorAppointmentSelectedTreatment && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="mt-1 px-0 text-blue-600"
+                                onClick={() => setDoctorAppointmentSelectedTreatment(null)}
+                              >
+                                Clear selection
+                              </Button>
+                            )}
+                            {doctorTreatmentSelectionError && (
+                              <p className="text-red-500 text-xs mt-1">{doctorTreatmentSelectionError}</p>
+                            )}
+                          </>
+                        )}
+                        {doctorAppointmentType === "consultation" && (
+                          <>
+                            <Label className="text-sm font-medium text-gray-900 dark:text-white">Select Consultation</Label>
+                            <Popover open={openDoctorConsultationCombo} onOpenChange={setOpenDoctorConsultationCombo}>
+                              <PopoverTrigger asChild>
+                                <Button
+                                  variant="outline"
+                                  role="combobox"
+                                  aria-expanded={openDoctorConsultationCombo}
+                                  className="w-full justify-between mt-1"
+                                  data-testid="select-doctor-consultation"
+                                >
+                                  {doctorAppointmentSelectedConsultation ? doctorAppointmentSelectedConsultation.serviceName : "Select a consultation"}
+                                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                </Button>
+                              </PopoverTrigger>
+                              <PopoverContent className="w-full p-0" align="start">
+                                <Command>
+                                  <CommandInput placeholder="Search consultation..." />
+                                  <CommandList>
+                                    <CommandEmpty>No consultations found.</CommandEmpty>
+                                    <CommandGroup>
+                                      {consultationServices.map((service: any) => (
+                                        <CommandItem
+                                          key={service.id}
+                                          value={service.id.toString()}
+                                          onSelect={() => {
+                                            setDoctorAppointmentSelectedConsultation(service);
+                                            setDoctorConsultationSelectionError("");
+                                            setOpenDoctorConsultationCombo(false);
+                                          }}
+                                        >
+                                          <div className="flex items-center gap-2 w-full">
+                                            <span className="flex-1 text-left">{service.serviceName}</span>
+                                            <span className="text-xs text-gray-500">
+                                              {service.currency} {service.basePrice}
+                                            </span>
+                                          </div>
+                                        </CommandItem>
+                                      ))}
+                                    </CommandGroup>
+                                  </CommandList>
+                                </Command>
+                              </PopoverContent>
+                            </Popover>
+                            {doctorAppointmentSelectedConsultation && (
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="mt-1 px-0 text-blue-600"
+                                onClick={() => setDoctorAppointmentSelectedConsultation(null)}
+                              >
+                                Clear selection
+                              </Button>
+                            )}
+                            {doctorConsultationSelectionError && (
+                              <p className="text-red-500 text-xs mt-1">{doctorConsultationSelectionError}</p>
+                            )}
+                          </>
+                        )}
+                        {!doctorAppointmentType && (
+                          <p className="text-xs text-gray-500 mt-2">
+                            Select an appointment type to pick a treatment or consultation.
+                          </p>
+                        )}
                       </div>
                     </div>
 
@@ -3405,6 +3866,9 @@ export default function CalendarPage() {
                             <SelectItem value="15">15 minutes</SelectItem>
                             <SelectItem value="30">30 minutes</SelectItem>
                             <SelectItem value="60">60 minutes</SelectItem>
+                            <SelectItem value="90">90 minutes</SelectItem>
+                            <SelectItem value="120">120 minutes (2 hours)</SelectItem>
+                            <SelectItem value="180">180 minutes (3 hours)</SelectItem>
                           </SelectContent>
                         </Select>
                       </div>
@@ -3614,6 +4078,12 @@ export default function CalendarPage() {
                         setSelectedProviderId("");
                         setSelectedDuration(30);
                         setSelectedMedicalSpecialty("");
+                        setDoctorAppointmentType("");
+                        setDoctorAppointmentSelectedTreatment(null);
+                        setDoctorAppointmentSelectedConsultation(null);
+                        setDoctorAppointmentTypeError("");
+                        setDoctorTreatmentSelectionError("");
+                        setDoctorConsultationSelectionError("");
                       }}
                       data-testid="button-cancel-appointment"
                     >
@@ -3639,7 +4109,13 @@ export default function CalendarPage() {
                         const dateStr = format(selectedDate!, 'yyyy-MM-dd');
                         
                         // Combine date and time directly without timezone conversion
-                        const appointmentDateTime = `${dateStr} ${time24}:00`;
+                        const [hour, minute] = time24.split(':').map(Number);
+                        const appointmentMoment = new Date(selectedDate);
+                        appointmentMoment.setHours(hour, minute, 0, 0);
+                        const appointmentDateTime = format(
+                          appointmentMoment,
+                          "yyyy-MM-dd'T'HH:mm:ssxxx",
+                        );
                         
                         // Handle both numeric and string patient IDs
                         let patientId: string | number = bookingForm.patientId;
@@ -3659,6 +4135,23 @@ export default function CalendarPage() {
                           location: bookingForm.location || provider?.department || '',
                           duration: selectedDuration,
                           scheduledAt: appointmentDateTime
+                        };
+
+                        const normalizedPatientAppointmentType =
+                          doctorAppointmentType || "consultation";
+                        const patientTreatmentId =
+                          normalizedPatientAppointmentType === "treatment"
+                            ? doctorAppointmentSelectedTreatment?.id || null
+                            : null;
+                        const patientConsultationId =
+                          normalizedPatientAppointmentType === "consultation"
+                            ? doctorAppointmentSelectedConsultation?.id || null
+                            : null;
+                        const patientAppointmentData = {
+                          ...appointmentData,
+                          appointmentType: normalizedPatientAppointmentType,
+                          treatmentId: patientTreatmentId,
+                          consultationId: patientConsultationId,
                         };
 
                         // Check for duplicate appointments (same patient, same doctor, same date)
@@ -3867,15 +4360,24 @@ export default function CalendarPage() {
                           });
                         }
 
-                        // For doctors and patients: Show invoice modal directly
-                        // For other users: Show confirmation modal before booking
-                        setPendingAppointmentData(appointmentData);
-                        setShowNewAppointmentModal(false); // Close the booking modal first
-                        if (user?.role === 'doctor' || user?.role === 'patient') {
-                          setShowInvoiceModal(true);
-                        } else {
+                        // Close the booking modal first
+                        setShowNewAppointmentModal(false);
+                        setPendingAppointmentData(patientAppointmentData);
+                        setShowInvoiceSummary(false);
+
+                        if (isDoctorLike(user?.role)) {
                           setShowConfirmationModal(true);
+                          return;
                         }
+
+                        if (user?.role === "patient") {
+                          setShowInvoiceModal(true);
+                          setShowConfirmationModal(false);
+                          return;
+                        }
+
+                        // For other users, show confirmation before invoicing
+                        setShowConfirmationModal(true);
                       }}
                       data-testid="button-book-appointment"
                     >
@@ -3894,9 +4396,9 @@ export default function CalendarPage() {
           <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
             <div className="bg-white rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
               <div className="p-6">
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-xl font-bold text-gray-900">
-                    Confirm Appointment
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-xl font-bold text-gray-900">
+            Booking Summary
                   </h2>
                   <Button
                     variant="ghost"
@@ -3911,7 +4413,11 @@ export default function CalendarPage() {
                   </Button>
                 </div>
 
-                {/* Patient Information */}
+        <p className="text-sm text-gray-600 mb-6">
+          Review appointment details before confirming the booking.
+        </p>
+
+        {/* Patient Information */}
                 <Card className="mb-6">
                   <CardHeader>
                     <CardTitle className="text-lg">Patient Information</CardTitle>
@@ -4005,6 +4511,29 @@ export default function CalendarPage() {
                           <p className="font-medium">{pendingAppointmentData.location}</p>
                         </div>
                       )}
+                      <div className="col-span-2">
+                        <p className="text-sm text-gray-500 mb-1">Appointment Type</p>
+                        <p className="font-medium">
+                          {getAppointmentTypeLabel(pendingAppointmentData)}
+                        </p>
+                      </div>
+                      {bookingSummaryServiceInfo && (
+                        <div className="col-span-2">
+                          <p className="text-sm text-gray-500 mb-1">Service</p>
+                          <div className="flex items-center gap-2">
+                            <span
+                              className="inline-flex h-3 w-3 rounded-full border border-gray-300"
+                              style={{ backgroundColor: bookingSummaryServiceInfo.color }}
+                            />
+                            <span className="font-medium">
+                              {bookingSummaryServiceInfo.name}
+                              {bookingSummaryServiceInfo.price
+                                ? ` • ${bookingSummaryServiceInfo.price}`
+                                : ""}
+                            </span>
+                          </div>
+                        </div>
+                      )}
                       {pendingAppointmentData.title && (
                         <div className="col-span-2">
                           <p className="text-sm text-gray-500 mb-1">Title</p>
@@ -4029,6 +4558,12 @@ export default function CalendarPage() {
                       setShowConfirmationModal(false);
                       setPendingAppointmentData(null);
                       setSelectedDoctor(null); // Clear selected doctor
+                      setDoctorAppointmentType("");
+                      setDoctorAppointmentSelectedTreatment(null);
+                      setDoctorAppointmentSelectedConsultation(null);
+                      setDoctorAppointmentTypeError("");
+                      setDoctorTreatmentSelectionError("");
+                      setDoctorConsultationSelectionError("");
                       setShowNewAppointmentModal(true); // Reopen the booking modal
                     }}
                     data-testid="button-go-back"
@@ -4037,18 +4572,17 @@ export default function CalendarPage() {
                   </Button>
                   <Button
                     onClick={() => {
-                      // Pre-populate invoice form
-                      setInvoiceForm({
-                        serviceDate: pendingAppointmentData.scheduledAt ? new Date(pendingAppointmentData.scheduledAt).toISOString().split('T')[0] : new Date().toISOString().split('T')[0],
-                        invoiceDate: new Date().toISOString().split('T')[0],
-                        dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0],
-                        serviceCode: "CONS-001",
-                        serviceDescription: "General Consultation",
-                        amount: "50.00",
-                        insuranceProvider: "None (Patient Self-Pay)",
-                        notes: "",
-                        paymentMethod: ""
-                      });
+                      if (isDoctorLike(user?.role)) {
+                        if (pendingAppointmentData) {
+                          setShowConfirmationModal(false);
+                          createDoctorAppointmentMutation.mutate(pendingAppointmentData);
+                        }
+                        return;
+                      }
+
+                      const serviceInfo = getBookingServiceInfo(pendingAppointmentData);
+                      const invoiceDefaults = buildInvoiceDefaults(pendingAppointmentData, serviceInfo);
+                      setInvoiceForm(invoiceDefaults);
                       
                       // Close confirmation modal and open invoice modal
                       setShowConfirmationModal(false);
@@ -4058,7 +4592,7 @@ export default function CalendarPage() {
                     data-testid="button-confirm-appointment"
                   >
                     <Check className="h-4 w-4 mr-2" />
-                    Confirm Appointment
+                    {isDoctorLike(user?.role) ? "Confirm Booking" : "Confirm Appointment"}
                   </Button>
                 </div>
               </div>

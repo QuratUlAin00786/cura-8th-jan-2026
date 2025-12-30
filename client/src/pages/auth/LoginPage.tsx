@@ -246,6 +246,10 @@ export default function LoginPage() {
                   <span>Pharmacist:</span>
                   <span>pharmacist@cura.com / pharma123</span>
                 </div>
+                <div className="flex justify-between">
+                  <span>Nurse:</span>
+                  <span>nurse@curaemr.ai / nurse123</span>
+                </div>
               </div>
             </div>
 
@@ -256,13 +260,13 @@ export default function LoginPage() {
                 variant="outline"
                 size="sm"
                 onClick={() => {
-                  setEmail("james@curaemr.ai");
-                  setPassword("467fe887");
+                  setEmail("nurse@curaemr.ai");
+                  setPassword("nurse123");
                 }}
                 className="text-xs"
-                data-testid="button-login-admin"
+                data-testid="button-login-nurse"
               >
-                Admin
+                Nurse
               </Button>
               <Button
                 type="button"
@@ -328,6 +332,19 @@ export default function LoginPage() {
                 data-testid="button-login-pharmacist"
               >
                 Pharmacist
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setEmail("james@curaemr.ai");
+                  setPassword("467fe887");
+                }}
+                className="text-xs col-span-3"
+                data-testid="button-login-admin"
+              >
+                Admin
               </Button>
             </div>
           </CardContent>

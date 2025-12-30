@@ -13,7 +13,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
@@ -2140,7 +2140,105 @@ export default function BillingPage() {
   const [updatingStatusId, setUpdatingStatusId] = useState<string | null>(null);
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [invoiceToPay, setInvoiceToPay] = useState<Invoice | null>(null);
-  const [isListView, setIsListView] = useState(false);
+  const [isListView, setIsListView] = useState(true);
+  const [invoicePaymentMethod, setInvoicePaymentMethod] = useState<
+    "Cash" | "Online Payment" | "Insurance"
+  >("Online Payment");
+  const [invoiceStatus, setInvoiceStatus] = useState<"pending" | "paid" | "partial">("pending");
+  const [insuranceDetails, setInsuranceDetails] = useState({
+    provider: "",
+    planType: "",
+    policyNumber: "",
+    memberNumber: "",
+    memberName: "",
+    contact: "",
+  });
+  const [insuranceForm, setInsuranceForm] = useState({
+    provider: "",
+    planType: "",
+    policyNumber: "",
+    memberNumber: "",
+    memberName: "",
+    contact: "",
+  });
+  const [showInsuranceInfoDialog, setShowInsuranceInfoDialog] = useState(false);
+  const [insuranceDialogPromptedFor, setInsuranceDialogPromptedFor] = useState<string | null>(null);
+
+  const insuranceProviders = [
+    "NHS (National Health Service)",
+    "Bupa",
+    "AXA PPP Healthcare",
+    "Vitality Health",
+    "Aviva Health",
+    "Simply Health",
+    "WPA",
+    "Benenden Health",
+    "Healix Health Services",
+    "Sovereign Health Care",
+    "Exeter Friendly Society",
+    "Self-Pay",
+    "Other",
+  ];
+
+  const insurancePlanTypes = ["Individual", "Family", "Corporate", "Group", "Private"];
+
+  const getPatientInsuranceInfo = (patientId?: string) => {
+    if (!patientId || !patients) return null;
+    const patient = patients.find((p: any) => p.patientId === patientId);
+    if (!patient) return null;
+    const info = patient.insuranceInfo || {};
+    const provider = info.provider || patient.insuranceProvider || patient.insurance || "";
+    if (!provider) return null;
+    const memberName =
+      info.memberName || `${patient.firstName || ""} ${patient.lastName || ""}`.trim();
+    const contact = info.contact || patient.phone || patient.mobile || patient.contact || "";
+    return {
+      provider,
+      planType: info.planType || "",
+      policyNumber: info.policyNumber || patient.insuranceNumber || "",
+      memberNumber: info.memberNumber || "",
+      memberName,
+      contact,
+    };
+  };
+
+  const openInsuranceDialog = (prefill?: (typeof insuranceDetails)) => {
+    setInsuranceForm({
+      provider: prefill?.provider || insuranceDetails.provider,
+      planType: prefill?.planType || insuranceDetails.planType,
+      policyNumber: prefill?.policyNumber || insuranceDetails.policyNumber,
+      memberNumber: prefill?.memberNumber || insuranceDetails.memberNumber,
+      memberName: prefill?.memberName || insuranceDetails.memberName,
+      contact: prefill?.contact || insuranceDetails.contact,
+    });
+    setShowInsuranceInfoDialog(true);
+  };
+  const [isCreatingInvoice, setIsCreatingInvoice] = useState(false);
+
+  const handleInvoicePaymentMethodChange = (newMethod: "Cash" | "Online Payment" | "Insurance") => {
+    setInvoicePaymentMethod(newMethod);
+    if (newMethod === "Cash") {
+      setInvoiceStatus("paid");
+    } else if (newMethod === "Online Payment") {
+      setInvoiceStatus("pending");
+    } else {
+      setInvoiceStatus("pending");
+    }
+  };
+
+  const handlePaymentSuccess = async (paidInvoice: Invoice) => {
+    try {
+      await apiRequest("PATCH", `/api/billing/invoices/${paidInvoice.id}`, { status: "paid" });
+      toast({
+        title: "Payment Successful",
+        description: `Invoice ${paidInvoice.invoiceNumber} marked as paid.`,
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/billing/invoices"] });
+      queryClient.refetchQueries({ queryKey: ["/api/billing/invoices"] });
+    } catch (error) {
+      console.error("Failed to update invoice status after payment:", error);
+    }
+  };
   
   // Date filter states
   const [serviceDateFrom, setServiceDateFrom] = useState("");
@@ -2202,6 +2300,7 @@ export default function BillingPage() {
   // Check if user is admin or patient
   const isAdmin = user?.role === 'admin';
   const isPatient = user?.role === 'patient';
+  const canShowNewInvoiceButton = isAdmin || user?.role === 'doctor' || user?.role === 'nurse';
 
   // Fetch clinic headers and footers
   useEffect(() => {
@@ -2306,6 +2405,186 @@ export default function BillingPage() {
       });
     } finally {
       setUpdatingStatusId(null);
+    }
+  };
+
+  const handleCreateInvoice = async () => {
+    setIsCreatingInvoice(true);
+    setPatientError("");
+    setServiceError("");
+    setTotalAmountError("");
+    setNhsNumberError("");
+
+    if (!selectedPatient || selectedPatient === 'loading' || selectedPatient === 'no-patients') {
+      setPatientError('Please select a patient to bill');
+      setIsCreatingInvoice(false);
+      return;
+    }
+
+    if (!firstServiceCode.trim() || !firstServiceDesc.trim()) {
+      setServiceError('Please enter both a service code and description');
+      setIsCreatingInvoice(false);
+      return;
+    }
+
+    const qty = parseInt(firstServiceQty || '0', 10);
+    const unitPrice = parseFloat(firstServiceAmount || '0');
+    const total = parseFloat(totalAmount || '0');
+
+    if (isNaN(qty) || qty <= 0 || isNaN(unitPrice) || unitPrice <= 0) {
+      setServiceError('Quantity and amount must be numbers greater than zero');
+      setIsCreatingInvoice(false);
+      return;
+    }
+
+    if (isNaN(total) || total <= 0) {
+      setTotalAmountError('Total amount must be greater than zero');
+      setIsCreatingInvoice(false);
+      return;
+    }
+
+    if (invoicePaymentMethod === "Insurance" && !insuranceDetails.provider.trim()) {
+      toast({
+        title: "Missing Insurance Provider",
+        description: "Add the insurance provider details before creating the invoice.",
+        variant: "destructive"
+      });
+      openInsuranceDialog();
+      setIsCreatingInvoice(false);
+      return;
+    }
+
+    const resolvedInsuranceProvider =
+      invoicePaymentMethod === "Insurance"
+        ? insuranceDetails.provider || insuranceProvider
+        : insuranceProvider;
+
+    const insuranceSummaryParts: string[] = [];
+
+    if (invoicePaymentMethod === "Insurance") {
+      if (insuranceDetails.provider) {
+        insuranceSummaryParts.push(`Provider: ${insuranceDetails.provider}`);
+      }
+      if (insuranceDetails.planType) {
+        insuranceSummaryParts.push(`Plan: ${insuranceDetails.planType}`);
+      }
+      if (insuranceDetails.policyNumber) {
+        insuranceSummaryParts.push(`Policy: ${insuranceDetails.policyNumber}`);
+      }
+      if (insuranceDetails.memberNumber) {
+        insuranceSummaryParts.push(`Member #: ${insuranceDetails.memberNumber}`);
+      }
+      if (insuranceDetails.memberName) {
+        insuranceSummaryParts.push(`Member: ${insuranceDetails.memberName}`);
+      }
+      if (insuranceDetails.contact) {
+        insuranceSummaryParts.push(`Contact: ${insuranceDetails.contact}`);
+      }
+    }
+
+    const insuranceSummary = insuranceSummaryParts.join(' | ');
+
+    const invoicePayload = {
+      patientId: selectedPatient,
+      serviceDate,
+      invoiceDate,
+      dueDate,
+      totalAmount: totalAmount || '0',
+      paidAmount: invoicePaymentMethod === "Cash" ? totalAmount || '0' : '0',
+      status: invoiceStatus,
+      paymentMethod: invoicePaymentMethod,
+      insuranceProvider: resolvedInsuranceProvider,
+      nhsNumber: nhsNumber.trim() || undefined,
+      firstServiceCode,
+      firstServiceDesc,
+      firstServiceQty,
+      firstServiceAmount,
+      notes: [notes, insuranceSummary].filter(Boolean).join(' | ')
+    };
+
+    try {
+      const response = await apiRequest('POST', '/api/billing/invoices', invoicePayload);
+      const responseBody = await response.json();
+      if (!response.ok) {
+        throw new Error(responseBody?.error || 'Failed to create invoice');
+      }
+      const createdInvoice = responseBody as Invoice;
+
+      setShowNewInvoice(false);
+      setSelectedPatient("");
+      setServiceDate(new Date().toISOString().split('T')[0]);
+      setInvoiceDate(new Date().toISOString().split('T')[0]);
+      setDueDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
+      setTotalAmount("");
+      setInsuranceProvider("");
+      setNhsNumber("");
+      setFirstServiceCode("");
+      setFirstServiceDesc("");
+      setFirstServiceQty("");
+      setFirstServiceAmount("");
+      setNotes("");
+      setInvoicePaymentMethod("Online Payment");
+      setInvoiceStatus("pending");
+      setInsuranceDetails({
+        provider: "",
+        planType: "",
+        policyNumber: "",
+        memberNumber: "",
+        memberName: "",
+        contact: "",
+      });
+      setInsuranceDialogPromptedFor(null);
+
+      queryClient.invalidateQueries({ queryKey: ["/api/billing/invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/billing"] });
+
+      if (invoicePaymentMethod === "Online Payment") {
+        setInvoiceToPay(createdInvoice);
+        setShowPaymentModal(true);
+      } else {
+        setCreatedInvoiceNumber(createdInvoice.invoiceNumber || "");
+        setShowSuccessModal(true);
+      }
+    } catch (error) {
+      console.error('Invoice creation failed:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unable to create invoice. Please try again.';
+      toast({
+        title: "Invoice Creation Failed",
+        description: errorMessage,
+        variant: "destructive"
+      });
+    } finally {
+      setIsCreatingInvoice(false);
+    }
+  };
+
+  const handleInsuranceDialogSave = () => {
+    setInsuranceDetails(insuranceForm);
+    setShowInsuranceInfoDialog(false);
+    setInsuranceDialogPromptedFor(null);
+
+    if (selectedPatient && patients) {
+      queryClient.setQueryData(["/api/patients"], (oldData: any) => {
+        if (!Array.isArray(oldData)) return oldData;
+        return oldData.map((patient: any) =>
+          patient.patientId === selectedPatient
+            ? {
+                ...patient,
+                insuranceInfo: {
+                  ...(patient.insuranceInfo || {}),
+                  provider: insuranceForm.provider,
+                  planType: insuranceForm.planType,
+                  policyNumber: insuranceForm.policyNumber,
+                  memberNumber: insuranceForm.memberNumber,
+                  memberName: insuranceForm.memberName,
+                  contact: insuranceForm.contact,
+                },
+                insuranceProvider: insuranceForm.provider,
+                insuranceNumber: insuranceForm.policyNumber,
+              }
+            : patient
+        );
+      });
     }
   };
 
@@ -2907,8 +3186,9 @@ export default function BillingPage() {
   const [totalAmountError, setTotalAmountError] = useState("");
   const [nhsNumberError, setNhsNumberError] = useState("");
 
-  const handleSendInvoice = (invoiceId: string) => {
-    const invoice = Array.isArray(invoices) ? invoices.find((inv: any) => inv.id === invoiceId) : null;
+  const handleSendInvoice = (invoiceId: string | number) => {
+    const normalizedInvoiceId = typeof invoiceId === 'number' ? invoiceId : Number(invoiceId);
+    const invoice = Array.isArray(invoices) ? invoices.find((inv: any) => inv.id === normalizedInvoiceId) : null;
     if (invoice) {
       setInvoiceToSend(invoice);
       setRecipientEmail(`${invoice.patientName.toLowerCase().replace(' ', '.')}@email.com`);
@@ -3136,6 +3416,40 @@ export default function BillingPage() {
       setNhsNumber("");
     }
   }, [selectedPatient, patients]);
+
+  useEffect(() => {
+    if (invoicePaymentMethod !== "Insurance") {
+      setInsuranceDialogPromptedFor(null);
+      return;
+    }
+
+    if (!selectedPatient) {
+      return;
+    }
+
+    const patientInsurance = getPatientInsuranceInfo(selectedPatient);
+
+    if (patientInsurance) {
+      setInsuranceDetails((prev) => ({
+        ...prev,
+        ...patientInsurance,
+      }));
+      setInsuranceDialogPromptedFor(null);
+      return;
+    }
+
+    if (!insuranceDetails.provider && insuranceDialogPromptedFor !== selectedPatient) {
+      openInsuranceDialog({
+        provider: "",
+        planType: "",
+        policyNumber: "",
+        memberNumber: "",
+        memberName: "",
+        contact: "",
+      });
+      setInsuranceDialogPromptedFor(selectedPatient);
+    }
+  }, [invoicePaymentMethod, selectedPatient, patients, insuranceDetails.provider, insuranceDialogPromptedFor]);
 
   const filteredInvoices = Array.isArray(displayInvoices) ? displayInvoices.filter((invoice: any) => {
     // Filter by patient ID if user is a patient
@@ -4072,6 +4386,13 @@ export default function BillingPage() {
                             </PopoverContent>
                           </Popover>
 
+                          {canShowNewInvoiceButton && (
+                            <Button onClick={() => setShowNewInvoice(true)} className="ml-auto flex items-center gap-2">
+                              <Plus className="h-4 w-4" />
+                              New Invoice
+                            </Button>
+                          )}
+
                           {user?.role === 'doctor' && (
                             <>
                               <Select value={insuranceProviderFilter} onValueChange={setInsuranceProviderFilter}>
@@ -4253,7 +4574,9 @@ export default function BillingPage() {
                                     {invoice.paymentMethod || 'N/A'}
                                   </Badge>
                                 </td>
-                                <td className="px-4 py-4 text-sm text-gray-600 dark:text-gray-400">{invoice.serviceType || '-'}</td>
+                                <td className="px-4 py-4 text-sm text-gray-600 dark:text-gray-400">
+                                  {invoice.serviceType || invoice.serviceName || invoice.items?.[0]?.description || '-'}
+                                </td>
                                 <td className="px-4 py-4 text-sm text-gray-600 dark:text-gray-400">{invoice.serviceId || '-'}</td>
                                 <td className="px-4 py-4 text-sm text-gray-900 dark:text-gray-100">{format(new Date(invoice.dateOfService), 'MMM d, yyyy')}</td>
                                 <td className="px-4 py-4 text-sm text-gray-900 dark:text-gray-100">{format(new Date(invoice.dueDate), 'MMM d, yyyy')}</td>
@@ -4590,12 +4913,14 @@ export default function BillingPage() {
                                 data-testid="switch-admin-list-view"
                               />
                             </div>
-                            {canCreate('billing') && (
-                              <Button onClick={() => setShowNewInvoice(true)}>
-                                <Plus className="h-4 w-4 mr-2" />
-                                New Invoice
-                              </Button>
-                            )}
+                            <div className="ml-auto">
+                              {canShowNewInvoiceButton && (
+                                <Button onClick={() => setShowNewInvoice(true)}>
+                                  <Plus className="h-4 w-4 mr-2" />
+                                  New Invoice
+                                </Button>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -6020,57 +6345,19 @@ export default function BillingPage() {
 
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <Label htmlFor="insurance">Insurance Provider</Label>
-                <Select value={insuranceProvider} onValueChange={setInsuranceProvider}>
+                <Label className="text-sm font-medium">Payment Method</Label>
+                <Select value={invoicePaymentMethod} onValueChange={(value) => handleInvoicePaymentMethodChange(value as any)}>
                   <SelectTrigger>
-                    <SelectValue placeholder="Select insurance provider..." />
+                    <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">None (Patient Self-Pay)</SelectItem>
-                    <SelectItem value="nhs">NHS (National Health Service)</SelectItem>
-                    <SelectItem value="bupa">Bupa</SelectItem>
-                    <SelectItem value="axa">AXA PPP Healthcare</SelectItem>
-                    <SelectItem value="vitality">Vitality Health</SelectItem>
-                    <SelectItem value="aviva">Aviva Health</SelectItem>
-                    <SelectItem value="simply">Simply Health</SelectItem>
-                    <SelectItem value="wpa">WPA</SelectItem>
-                    <SelectItem value="benenden">Benenden Health</SelectItem>
-                    <SelectItem value="healix">Healix Health Services</SelectItem>
-                    <SelectItem value="sovereign">Sovereign Health Care</SelectItem>
-                    <SelectItem value="exeter">Exeter Friendly Society</SelectItem>
-                    <SelectItem value="selfpay">Self-Pay</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
+                    <SelectItem value="Cash">Cash</SelectItem>
+                    <SelectItem value="Online Payment">Online Payment</SelectItem>
+                    <SelectItem value="Insurance">Insurance</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
-              
-              {insuranceProvider && insuranceProvider !== '' && insuranceProvider !== 'none' && (
-                <div>
-                  <Label htmlFor="nhs-number">NHS Number</Label>
-                  <Input 
-                    id="nhs-number" 
-                    placeholder="123 456 7890 (10 digits)" 
-                    value={nhsNumber}
-                    onChange={(e) => {
-                      const value = e.target.value;
-                      setNhsNumber(value);
-                      const digitsOnly = value.replace(/\s+/g, '');
-                      if (digitsOnly.length > 0 && digitsOnly.length !== 10) {
-                        setNhsNumberError("NHS number must be exactly 10 digits");
-                      } else if (digitsOnly.length > 0 && !/^\d+$/.test(digitsOnly)) {
-                        setNhsNumberError("NHS number must contain only digits");
-                      } else {
-                        setNhsNumberError("");
-                      }
-                    }}
-                    maxLength={12}
-                  />
-                  {nhsNumberError && (
-                    <p className="text-sm text-red-600 mt-1">{nhsNumberError}</p>
-                  )}
-                </div>
-              )}
-              
+
               <div>
                 <Label htmlFor="total">Total Amount</Label>
                 <Input 
@@ -6084,6 +6371,69 @@ export default function BillingPage() {
                 )}
               </div>
             </div>
+
+            {invoicePaymentMethod === "Insurance" && (
+              <div className="border border-blue-200 dark:border-blue-900/50 rounded-lg bg-blue-50 dark:bg-blue-900/30 p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-blue-800 dark:text-blue-200">Insurance Details</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => openInsuranceDialog()}
+                  >
+                    {insuranceDetails.provider ? "Update" : "Add Insurance Info"}
+                  </Button>
+                </div>
+                <div>
+                  <p className="text-sm text-gray-600 dark:text-gray-300">
+                    {insuranceDetails.provider
+                      ? `Provider: ${insuranceDetails.provider}`
+                      : "No insurance provider recorded yet."}
+                  </p>
+                  {insuranceDetails.planType && (
+                    <p className="text-sm text-gray-600 dark:text-gray-300">
+                      Plan Type: {insuranceDetails.planType}
+                    </p>
+                  )}
+                  {insuranceDetails.policyNumber && (
+                    <p className="text-sm text-gray-600 dark:text-gray-300">
+                      Policy #: {insuranceDetails.policyNumber}
+                    </p>
+                  )}
+                  {insuranceDetails.memberNumber && (
+                    <p className="text-sm text-gray-600 dark:text-gray-300">
+                      Member #: {insuranceDetails.memberNumber}
+                    </p>
+                  )}
+                  {insuranceDetails.memberName && (
+                    <p className="text-sm text-gray-600 dark:text-gray-300">
+                      Member: {insuranceDetails.memberName}
+                    </p>
+                  )}
+                  {insuranceDetails.contact && (
+                    <p className="text-sm text-gray-600 dark:text-gray-300">
+                      Contact: {insuranceDetails.contact}
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <Label className="text-sm font-medium text-gray-900 dark:text-white">Insurance Status</Label>
+                  <Select
+                    value={invoiceStatus}
+                    onValueChange={(value) => setInvoiceStatus(value as any)}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="pending">Pending</SelectItem>
+                      <SelectItem value="partial">Partial Paid</SelectItem>
+                      <SelectItem value="paid">Paid</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
 
             <div className="p-4 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-lg">
               <div className="flex items-center gap-2">
@@ -6123,129 +6473,8 @@ export default function BillingPage() {
             <Button variant="outline" onClick={() => setShowNewInvoice(false)}>
               Cancel
             </Button>
-            <Button onClick={async () => {
-              console.log('Creating new invoice...');
-              
-              // Clear previous validation errors
-              setPatientError("");
-              setServiceError("");
-              setTotalAmountError("");
-              setNhsNumberError("");
-              
-              let hasValidationError = false;
-              
-              // Validate patient selection
-              if (!selectedPatient || selectedPatient === '' || selectedPatient === 'loading' || selectedPatient === 'no-patients') {
-                setPatientError('Please select a patient');
-                hasValidationError = true;
-              }
-              
-              // Validate service data - ALL fields are required per backend validation
-              if (!firstServiceCode.trim()) {
-                setServiceError('Please enter a service code');
-                hasValidationError = true;
-              } else if (!firstServiceDesc.trim()) {
-                setServiceError('Please enter a service description');
-                hasValidationError = true;
-              } else if (!firstServiceQty.trim() || isNaN(parseInt(firstServiceQty)) || parseInt(firstServiceQty) <= 0) {
-                setServiceError('Please enter a valid service quantity');
-                hasValidationError = true;
-              } else if (!firstServiceAmount.trim() || isNaN(parseFloat(firstServiceAmount)) || parseFloat(firstServiceAmount) <= 0) {
-                setServiceError('Please enter a valid service amount');
-                hasValidationError = true;
-              }
-              
-              // Validate total amount
-              const total = parseFloat(totalAmount || '0');
-              if (isNaN(total) || total <= 0) {
-                setTotalAmountError('Please enter a valid total amount greater than 0');
-                hasValidationError = true;
-              }
-              
-              // Validate NHS Number if insurance provider is selected
-              if (insuranceProvider && insuranceProvider !== '' && insuranceProvider !== 'none') {
-                const digitsOnly = nhsNumber.replace(/\s+/g, '');
-                if (!nhsNumber.trim()) {
-                  setNhsNumberError('NHS number is required for insurance claims');
-                  hasValidationError = true;
-                } else if (digitsOnly.length !== 10) {
-                  setNhsNumberError('NHS number must be exactly 10 digits');
-                  hasValidationError = true;
-                } else if (!/^\d+$/.test(digitsOnly)) {
-                  setNhsNumberError('NHS number must contain only digits');
-                  hasValidationError = true;
-                }
-              }
-              
-              // Stop if there are validation errors
-              if (hasValidationError) {
-                return;
-              }
-              
-              try {
-                // Create invoice via API
-                const invoiceData = {
-                  patientId: selectedPatient,
-                  serviceDate,
-                  invoiceDate,
-                  dueDate,
-                  totalAmount,
-                  insuranceProvider,
-                  nhsNumber: nhsNumber.trim() || undefined,
-                  firstServiceCode,
-                  firstServiceDesc,
-                  firstServiceQty,
-                  firstServiceAmount,
-                  notes
-                };
-
-                const response = await apiRequest('POST', '/api/billing/invoices', invoiceData);
-                
-                // Check if response is successful
-                if (!response.ok) {
-                  const errorData = await response.json();
-                  throw new Error(errorData.error || 'Failed to create invoice');
-                }
-                
-                const newInvoice = await response.json();
-                
-                // Close the create invoice dialog
-                setShowNewInvoice(false);
-                
-                // Reset form state
-                setSelectedPatient("");
-                setServiceDate(new Date().toISOString().split('T')[0]);
-                setInvoiceDate(new Date().toISOString().split('T')[0]);
-                setDueDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]);
-                setTotalAmount("");
-                setInsuranceProvider("");
-                setNhsNumber("");
-                setFirstServiceCode("");
-                setFirstServiceDesc("");
-                setFirstServiceQty("");
-                setFirstServiceAmount("");
-                setNotes("");
-                
-                // Show success modal
-                setCreatedInvoiceNumber(newInvoice.invoiceNumber);
-                setShowSuccessModal(true);
-                
-                // Automatically refresh billing data - invalidate all invoice queries
-                queryClient.invalidateQueries({ queryKey: ["/api/billing/invoices"] });
-                queryClient.invalidateQueries({ queryKey: ["/api/billing"] });
-                queryClient.refetchQueries({ queryKey: ["/api/billing/invoices"] });
-                queryClient.refetchQueries({ queryKey: ["/api/billing"] });
-              } catch (error) {
-                console.error('Invoice creation failed:', error);
-                const errorMessage = error instanceof Error ? error.message : 'Failed to create invoice. Please try again.';
-                toast({
-                  title: "Invoice Creation Failed",
-                  description: errorMessage,
-                  variant: "destructive"
-                });
-              }
-            }}>
-              Create Invoice
+            <Button onClick={handleCreateInvoice} disabled={isCreatingInvoice} className="bg-blue-600 hover:bg-blue-700 text-white">
+              {isCreatingInvoice ? "Processing..." : "Review & Confirm"}
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -6683,14 +6912,108 @@ export default function BillingPage() {
             setShowPaymentModal(false);
             setInvoiceToPay(null);
           }}
-          onSuccess={() => {
+          onSuccess={async () => {
+            if (invoiceToPay) {
+              await handlePaymentSuccess(invoiceToPay);
+            }
             setShowPaymentModal(false);
             setInvoiceToPay(null);
-            queryClient.invalidateQueries({ queryKey: ["/api/billing/invoices"] });
-            queryClient.refetchQueries({ queryKey: ["/api/billing/invoices"] });
           }}
         />
       )}
+
+      <Dialog open={showInsuranceInfoDialog} onOpenChange={setShowInsuranceInfoDialog}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Health Insurance Information</DialogTitle>
+            <DialogDescription>Please confirm or add the patient’s insurance data.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <div>
+              <Label className="text-sm">Insurance Provider</Label>
+              <Select value={insuranceForm.provider} onValueChange={(value) => setInsuranceForm({ ...insuranceForm, provider: value })}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select insurance provider..." />
+                </SelectTrigger>
+                <SelectContent>
+                  {insuranceProviders.map((provider) => (
+                    <SelectItem key={provider} value={provider}>
+                      {provider}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label className="text-sm">Plan Type</Label>
+              <Select value={insuranceForm.planType} onValueChange={(value) => setInsuranceForm({ ...insuranceForm, planType: value })}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Select plan type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {insurancePlanTypes.map((plan) => (
+                    <SelectItem key={plan} value={plan}>
+                      {plan}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-sm">Policy Number</Label>
+                <Input
+                  placeholder="Enter policy number"
+                  value={insuranceForm.policyNumber}
+                  onChange={(e) => setInsuranceForm({ ...insuranceForm, policyNumber: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-sm">Member Number</Label>
+                <Input
+                  placeholder="Enter member number"
+                  value={insuranceForm.memberNumber}
+                  onChange={(e) => setInsuranceForm({ ...insuranceForm, memberNumber: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-sm">Member Name</Label>
+                <Input
+                  placeholder="Enter member name"
+                  value={insuranceForm.memberName}
+                  onChange={(e) => setInsuranceForm({ ...insuranceForm, memberName: e.target.value })}
+                />
+              </div>
+              <div>
+                <Label className="text-sm">Contact</Label>
+                <Input
+                  placeholder="Optional contact details"
+                  value={insuranceForm.contact}
+                  onChange={(e) => setInsuranceForm({ ...insuranceForm, contact: e.target.value })}
+                />
+              </div>
+            </div>
+            <div>
+              <Label className="text-sm">NHS Number</Label>
+              <Input
+                placeholder="Enter NHS number (optional)"
+                value={nhsNumber}
+                onChange={(e) => setNhsNumber(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter className="space-x-2">
+            <Button variant="outline" onClick={() => setShowInsuranceInfoDialog(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleInsuranceDialogSave}>
+              Save Insurance Info
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Submit Insurance Claim Dialog */}
       <Dialog open={showSubmitClaimDialog} onOpenChange={setShowSubmitClaimDialog}>

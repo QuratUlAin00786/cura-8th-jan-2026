@@ -32,82 +32,15 @@ import {
   ChevronsUpDown,
   Check,
   CheckCircle,
+  CreditCard,
+  FileText,
 } from "lucide-react";
-import { Elements, PaymentElement, useStripe, useElements } from "@stripe/react-stripe-js";
-import { loadStripe } from "@stripe/stripe-js";
-
-const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLIC_KEY || '');
-
-// Stripe Checkout Form Component
-function StripeCheckoutForm({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) {
-  const stripe = useStripe();
-  const elements = useElements();
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [paymentError, setPaymentError] = useState<string | null>(null);
-  const { toast } = useToast();
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!stripe || !elements) {
-      return;
-    }
-
-    setIsProcessing(true);
-    setPaymentError(null);
-
-    const { error } = await stripe.confirmPayment({
-      elements,
-      confirmParams: {
-        return_url: window.location.origin + '/doctors',
-      },
-      redirect: 'if_required',
-    });
-
-    if (error) {
-      setPaymentError(error.message || 'Payment failed');
-      setIsProcessing(false);
-    } else {
-      toast({
-        title: "Payment Successful",
-        description: "Your appointment has been booked and paid.",
-      });
-      onSuccess();
-    }
-  };
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-4">
-      <PaymentElement />
-      {paymentError && (
-        <div className="text-red-600 text-sm">{paymentError}</div>
-      )}
-      <div className="flex justify-end gap-2 pt-4">
-        <Button
-          type="button"
-          variant="outline"
-          onClick={onCancel}
-          disabled={isProcessing}
-        >
-          Cancel
-        </Button>
-        <Button
-          type="submit"
-          disabled={!stripe || isProcessing}
-          className="bg-green-600 hover:bg-green-700"
-        >
-          {isProcessing ? "Processing..." : "Pay Now"}
-        </Button>
-      </div>
-    </form>
-  );
-}
 
 import { useLocation } from "wouter";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, FormEvent } from "react";
 import { isDoctorLike } from "@/lib/role-utils";
 import type { User as Doctor, Appointment } from "@shared/schema";
 import {
@@ -130,9 +63,57 @@ import {
   CommandGroup,
   CommandInput,
   CommandItem,
+  CommandList,
 } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
 import { format } from "date-fns";
+import { Elements, PaymentElement, useStripe, useElements } from "@stripe/react-stripe-js";
+import { loadStripe } from "@stripe/stripe-js";
+
+const stripePromise = loadStripe(import.meta.env.VITE_STRIPE_PUBLIC_KEY || "");
+
+type BookingServiceInfo = {
+  name: string;
+  price?: string;
+  amount?: string;
+  currency?: string;
+  code?: string;
+  color?: string;
+};
+
+const formatDecimalString = (value?: number | string | null): string => {
+  if (value === undefined || value === null || value === "") {
+    return "0.00";
+  }
+  const numeric = typeof value === "string" ? Number(value) : value;
+  if (typeof numeric !== "number" || Number.isNaN(numeric)) {
+    return "0.00";
+  }
+  return numeric.toFixed(2);
+};
+
+const buildInvoiceDefaults = (appointment: any, serviceInfo: BookingServiceInfo | null) => {
+  const referenceDate = appointment?.scheduledAt ? new Date(appointment.scheduledAt) : new Date();
+  const serviceDate = referenceDate.toISOString().split("T")[0];
+  const invoiceDate = new Date().toISOString().split("T")[0];
+  const dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+  const amount = serviceInfo?.amount || "50.00";
+  const serviceDescription =
+    serviceInfo?.name || appointment?.title || "General Consultation";
+  const serviceCode = serviceInfo?.code || "CONS-001";
+
+  return {
+    serviceDate,
+    invoiceDate,
+    dueDate,
+    serviceCode,
+    serviceDescription,
+    amount,
+    insuranceProvider: "None (Patient Self-Pay)",
+    notes: "",
+    paymentMethod: "Online Payment",
+  };
+};
 
 interface DoctorListProps {
   onSelectDoctor?: (doctor: Doctor) => void;
@@ -215,33 +196,22 @@ export function DoctorList({
   const [selectedPatient, setSelectedPatient] = useState("");
   const [selectedDate, setSelectedDate] = useState<Date | undefined>(undefined);
   const [selectedTimeSlot, setSelectedTimeSlot] = useState("");
-  const [appointmentType, setAppointmentType] = useState("Consultation");
+  const [appointmentType, setAppointmentType] = useState<"consultation" | "treatment">("consultation");
   const [duration, setDuration] = useState("30");
   const [appointmentTitle, setAppointmentTitle] = useState("");
   const [appointmentDescription, setAppointmentDescription] = useState("");
   const [appointmentLocation, setAppointmentLocation] = useState("");
+  const [selectedTreatment, setSelectedTreatment] = useState<any | null>(null);
+  const [selectedConsultation, setSelectedConsultation] = useState<any | null>(null);
+  const [appointmentTypeError, setAppointmentTypeError] = useState("");
+  const [treatmentSelectionError, setTreatmentSelectionError] = useState("");
+  const [consultationSelectionError, setConsultationSelectionError] = useState("");
+  const [openTreatmentCombo, setOpenTreatmentCombo] = useState(false);
+  const [openConsultationCombo, setOpenConsultationCombo] = useState(false);
   
   // Confirmation dialog state
   const [isConfirmationOpen, setIsConfirmationOpen] = useState(false);
   const [isSuccessModalOpen, setIsSuccessModalOpen] = useState(false);
-  
-  // Invoice dialog state
-  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
-  const [showBookingSummary, setShowBookingSummary] = useState(false);
-  const [stripeClientSecret, setStripeClientSecret] = useState<string>("");
-  const [createdInvoiceId, setCreatedInvoiceId] = useState<number | null>(null);
-  const [invoiceStatus, setInvoiceStatus] = useState<string>("pending");
-  const [invoiceForm, setInvoiceForm] = useState({
-    serviceDate: "",
-    invoiceDate: "",
-    dueDate: "",
-    serviceCode: "CONS-001",
-    serviceDescription: "General Consultation",
-    amount: "50.00",
-    insuranceProvider: "None (Patient Self-Pay)",
-    notes: "No additional notes",
-    paymentMethod: "Online Payment",
-  });
   
   // Insufficient time alert state
   const [showInsufficientTimeModal, setShowInsufficientTimeModal] = useState(false);
@@ -253,10 +223,61 @@ export function DoctorList({
   
   // Track currently booking slot to prevent duplicates
   const [bookingInProgress, setBookingInProgress] = useState<string | null>(null);
-
+  const [pendingAppointmentData, setPendingAppointmentData] = useState<any>(null);
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [invoiceForm, setInvoiceForm] = useState({
+    serviceDate: new Date().toISOString().split("T")[0],
+    invoiceDate: new Date().toISOString().split("T")[0],
+    dueDate: new Date().toISOString().split("T")[0],
+    serviceCode: "CONS-001",
+    serviceDescription: "General Consultation",
+    amount: "50.00",
+    insuranceProvider: "None (Patient Self-Pay)",
+    notes: "",
+    paymentMethod: "Online Payment",
+  });
+  const [stripeClientSecret, setStripeClientSecret] = useState<string>("");
+  const [createdInvoiceId, setCreatedInvoiceId] = useState<number | null>(null);
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const { user } = useAuth();
+  const isPatientBookingFlow = user?.role === "patient";
+
+  const resetBookingForm = () => {
+    setSelectedDate(undefined);
+    setSelectedTimeSlot("");
+    setAppointmentType("consultation");
+    setDuration("30");
+    setAppointmentTitle("");
+    setAppointmentDescription("");
+    setAppointmentLocation("");
+    setSelectedTreatment(null);
+    setSelectedConsultation(null);
+    setAppointmentTypeError("");
+    setTreatmentSelectionError("");
+    setConsultationSelectionError("");
+    setSelectedPatient("");
+  };
+
+  const appointmentTypeLabel = appointmentType === "treatment" ? "Treatment" : "Consultation";
+
+  const selectedServiceInfo = useMemo(() => {
+    if (appointmentType === "treatment" && selectedTreatment) {
+      return {
+        label: selectedTreatment.name,
+        price: `${selectedTreatment.currency || "GBP"} ${selectedTreatment.basePrice}`,
+        color: selectedTreatment.colorCode || "#10B981",
+      };
+    }
+    if (appointmentType === "consultation" && selectedConsultation) {
+      return {
+        label: selectedConsultation.serviceName || selectedConsultation.service_name || "Consultation",
+        price: `${selectedConsultation.currency || "GBP"} ${selectedConsultation.price || 0}`,
+        color: selectedConsultation.colorCode || "#6366F1",
+      };
+    }
+    return null;
+  }, [appointmentType, selectedConsultation, selectedTreatment]);
 
   const {
     data: medicalStaffResponse,
@@ -354,6 +375,93 @@ export function DoctorList({
       return data;
     },
   });
+
+  const { data: treatmentsList = [] } = useQuery({
+    queryKey: ["/api/pricing/treatments"],
+    staleTime: 60000,
+    enabled: isBookingOpen,
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/pricing/treatments");
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    },
+  });
+
+  const { data: consultationServices = [] } = useQuery({
+    queryKey: ["/api/pricing/doctors-fees"],
+    staleTime: 60000,
+    enabled: isBookingOpen,
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/pricing/doctors-fees");
+      const data = await response.json();
+      return Array.isArray(data) ? data : [];
+    },
+  });
+
+  const treatmentsMap = useMemo(() => {
+    const map = new Map<number, any>();
+    treatmentsList.forEach((treatment: any) => {
+      if (treatment?.id) {
+        map.set(treatment.id, treatment);
+      }
+    });
+    return map;
+  }, [treatmentsList]);
+
+  const consultationMap = useMemo(() => {
+    const map = new Map<number, any>();
+    consultationServices.forEach((service: any) => {
+      if (service?.id) {
+        map.set(service.id, service);
+      }
+    });
+    return map;
+  }, [consultationServices]);
+
+  const getBookingServiceInfo = (appointment: any): BookingServiceInfo | null => {
+    if (!appointment) return null;
+    if (appointment.appointmentType === "treatment" && appointment.treatmentId) {
+      const treatment = treatmentsMap.get(appointment.treatmentId);
+      if (!treatment) return null;
+      const amount = formatDecimalString(treatment.basePrice);
+      const priceLabel = treatment.currency ? `${treatment.currency} ${amount}` : amount;
+      const code =
+        treatment.metadata?.serviceCode ||
+        treatment.metadata?.code ||
+        `TRT-${String(treatment.id ?? 0).padStart(3, "0")}`;
+      return {
+        name: treatment.name || "Treatment",
+        price: priceLabel,
+        amount,
+        currency: treatment.currency,
+        code,
+        color: treatment.colorCode || "#10B981",
+      };
+    }
+    if (appointment.appointmentType === "consultation" && appointment.consultationId) {
+      const service = consultationMap.get(appointment.consultationId);
+      if (!service) return null;
+      const amount = formatDecimalString(service.basePrice);
+      const priceLabel = service.currency ? `${service.currency} ${amount}` : amount;
+      const code =
+        service.serviceCode ||
+        `CONS-${String(service.id ?? 0).padStart(3, "0")}`;
+      return {
+        name: service.serviceName || "Consultation",
+        price: priceLabel,
+        amount,
+        currency: service.currency,
+        code,
+        color: service.colorCode || "#6366F1",
+      };
+    }
+    return null;
+  };
+
+const bookingSummaryServiceInfo = useMemo(
+  () => getBookingServiceInfo(pendingAppointmentData),
+  [pendingAppointmentData, treatmentsMap, consultationMap],
+);
 
   // Auto-select first available date when booking dialog opens and data is loaded
   const [hasAutoSelectedDate, setHasAutoSelectedDate] = useState(false);
@@ -590,6 +698,93 @@ export function DoctorList({
     },
   });
 
+  const createAppointmentAndInvoiceMutation = useMutation({
+    mutationFn: async ({ appointmentData, invoiceData }: { appointmentData: any; invoiceData: any }) => {
+      const appointmentResponse = await apiRequest("POST", "/api/appointments", {
+        ...appointmentData,
+        createdBy: user?.id,
+      });
+      const appointment = await appointmentResponse.json();
+
+      const invoiceDataWithServiceId = {
+        ...invoiceData,
+        serviceId: appointment.appointmentId || appointment.appointment_id,
+      };
+
+      const invoiceResponse = await apiRequest("POST", "/api/invoices", invoiceDataWithServiceId);
+      const invoice = await invoiceResponse.json();
+
+      return { appointment, invoice };
+    },
+    onSuccess: async ({ appointment, invoice }) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/appointments"] });
+      queryClient.invalidateQueries({
+        queryKey: ["/api/appointments", selectedBookingDoctor?.id, selectedDate],
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/invoices"] });
+
+      setShowInvoiceModal(false);
+      setPendingAppointmentData(null);
+      setIsConfirmationOpen(false);
+      setBookingInProgress(null);
+      resetBookingForm();
+      setSelectedDate(undefined);
+      setSelectedTimeSlot("");
+      setIsBookingOpen(false);
+      setInvoiceForm({
+        serviceDate: new Date().toISOString().split("T")[0],
+        invoiceDate: new Date().toISOString().split("T")[0],
+        dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().split("T")[0],
+        serviceCode: "CONS-001",
+        serviceDescription: "General Consultation",
+        amount: "50.00",
+        insuranceProvider: "None (Patient Self-Pay)",
+        notes: "",
+        paymentMethod: "Online Payment",
+      });
+
+      try {
+        const paymentIntentResponse = await apiRequest("POST", "/api/billing/create-payment-intent", {
+          invoiceId: invoice.id,
+          amount: parseFloat(invoice.totalAmount || invoice.subtotal || "0"),
+          description: `Appointment booking - Invoice #${invoice.id}`,
+        });
+        const paymentData = await paymentIntentResponse.json();
+
+        if (paymentData.clientSecret) {
+          setCreatedInvoiceId(invoice.id);
+          setStripeClientSecret(paymentData.clientSecret);
+        } else {
+          setIsSuccessModalOpen(true);
+          toast({
+            title: "Appointment Booked",
+            description: "Appointment created. Please complete payment from the billing section.",
+          });
+        }
+      } catch (paymentError) {
+        console.error("Failed to create payment intent:", paymentError);
+        setIsSuccessModalOpen(true);
+        toast({
+          title: "Appointment Booked",
+          description: "Appointment created. Please complete payment from the billing section.",
+        });
+      }
+    },
+    onError: (error: any) => {
+      console.error("Creation error:", error);
+      toast({
+        title: "Booking Failed",
+        description: error.message || "Failed to create appointment and invoice. Please try again.",
+        variant: "destructive",
+      });
+      setShowInvoiceModal(false);
+      setIsConfirmationOpen(false);
+      setPendingAppointmentData(null);
+      setIsBookingOpen(false);
+      setBookingInProgress(null);
+    },
+  });
+
   // Appointment booking mutation
   const bookAppointmentMutation = useMutation({
     mutationFn: async (appointmentData: any) => {
@@ -618,6 +813,7 @@ export function DoctorList({
       setIsConfirmationOpen(false);
       setIsBookingOpen(false);
       setIsSuccessModalOpen(true);
+      resetBookingForm();
     },
     onError: (error: any) => {
       toast({
@@ -632,6 +828,10 @@ export function DoctorList({
       setIsConfirmationOpen(false);
     },
   });
+
+  const confirmMutationPending = isPatientBookingFlow
+    ? createAppointmentAndInvoiceMutation.isPending
+    : bookAppointmentMutation.isPending;
 
   const openScheduleDialog = (doctor: Doctor) => {
     setSelectedDoctor(doctor);
@@ -756,8 +956,27 @@ export function DoctorList({
     return { isDuplicate: false, message: "" };
   };
 
-  // Handle "Book Appointment" button click - validate first, then open invoice dialog
+  // Handle "Book Appointment" button click - validate first, then show confirmation dialog
   const handleBookAppointmentClick = () => {
+    setAppointmentTypeError("");
+    setTreatmentSelectionError("");
+    setConsultationSelectionError("");
+
+    if (!appointmentType) {
+      setAppointmentTypeError("Please select an appointment type.");
+      return;
+    }
+
+    if (appointmentType === "treatment" && !selectedTreatment) {
+      setTreatmentSelectionError("Please select a treatment.");
+      return;
+    }
+
+    if (appointmentType === "consultation" && !selectedConsultation) {
+      setConsultationSelectionError("Please select a consultation.");
+      return;
+    }
+
     const { isDuplicate, message } = checkDuplicateAppointments();
     
     if (isDuplicate) {
@@ -765,27 +984,71 @@ export function DoctorList({
       setShowDuplicateModal(true);
       return;
     }
-    
-    // No duplicates found, set up invoice form and open invoice dialog
-    const today = new Date();
-    const serviceDate = selectedDate ? format(selectedDate, 'yyyy-MM-dd') : format(today, 'yyyy-MM-dd');
-    
-    setInvoiceForm({
-      serviceDate: serviceDate,
-      invoiceDate: format(today, 'yyyy-MM-dd'),
-      dueDate: format(today, 'yyyy-MM-dd'),
-      serviceCode: "CONS-001",
-      serviceDescription: "General Consultation",
-      amount: "50.00",
-      insuranceProvider: "None (Patient Self-Pay)",
-      notes: "No additional notes",
-      paymentMethod: "Online Payment",
-    });
-    
-    // Close booking dialog and open invoice dialog
+
+    const appointmentData = buildAppointmentPayload();
+    if (!appointmentData) {
+      return;
+    }
+
+    setPendingAppointmentData(appointmentData);
+    const serviceInfo = getBookingServiceInfo(appointmentData);
+    setInvoiceForm(buildInvoiceDefaults(appointmentData, serviceInfo));
+
+    if (user?.role === "patient") {
+      setIsBookingOpen(false);
+      setShowInvoiceModal(true);
+      return;
+    }
+
+    // Close booking dialog and show confirmation summary
     setIsBookingOpen(false);
-    setShowInvoiceModal(true);
-    setShowBookingSummary(false);
+    setIsConfirmationOpen(true);
+  };
+
+  const buildAppointmentPayload = () => {
+    if (
+      !selectedPatient ||
+      !selectedDate ||
+      !selectedTimeSlot ||
+      !selectedBookingDoctor
+    ) {
+      return null;
+    }
+
+    const [hours, minutes] = selectedTimeSlot.split(":").map(Number);
+    const year = selectedDate.getFullYear();
+    const month = String(selectedDate.getMonth() + 1).padStart(2, "0");
+    const day = String(selectedDate.getDate()).padStart(2, "0");
+    const hourStr = String(hours).padStart(2, "0");
+    const minuteStr = String(minutes).padStart(2, "0");
+    const scheduledAtString = `${year}-${month}-${day}T${hourStr}:${minuteStr}:00`;
+    const appointmentLabel = appointmentType === "treatment" ? "Treatment" : "Consultation";
+    const appointmentPayloadType = appointmentType === "treatment" ? "procedure" : "consultation";
+
+    return {
+      patientId: parseInt(selectedPatient),
+      providerId: selectedBookingDoctor.id,
+      title:
+        appointmentTitle ||
+        `${appointmentLabel} with ${selectedBookingDoctor.firstName} ${selectedBookingDoctor.lastName}`,
+      description: appointmentDescription || `${appointmentLabel} appointment`,
+      scheduledAt: scheduledAtString,
+      duration: parseInt(duration),
+      type: appointmentPayloadType,
+      location:
+        appointmentLocation ||
+        `${selectedBookingDoctor.department || "General"} Department`,
+      status: "scheduled",
+      isVirtual: false,
+      createdBy: user?.id,
+      appointmentType,
+      treatmentId:
+        appointmentType === "treatment" ? selectedTreatment?.id || null : null,
+      consultationId:
+        appointmentType === "consultation"
+          ? selectedConsultation?.id || null
+          : null,
+    };
   };
 
   const handleBookAppointment = () => {
@@ -795,6 +1058,11 @@ export function DoctorList({
       !selectedTimeSlot ||
       !selectedBookingDoctor
     ) {
+      return;
+    }
+
+    const appointmentData = buildAppointmentPayload();
+    if (!appointmentData) {
       return;
     }
 
@@ -829,31 +1097,60 @@ export function DoctorList({
     const bookingKey = `${selectedDateString}_${selectedTimeSlot}_${selectedBookingDoctor.id}`;
     setBookingInProgress(bookingKey);
 
-    const appointmentData = {
-      patientId: parseInt(selectedPatient),
-      providerId: selectedBookingDoctor.id,
-      title:
-        appointmentTitle ||
-        `${appointmentType} with ${selectedBookingDoctor.firstName} ${selectedBookingDoctor.lastName}`,
-      description: appointmentDescription || `${appointmentType} appointment`,
-      scheduledAt: scheduledAtString,
-      duration: parseInt(duration),
-      type: appointmentType.toLowerCase().replace("-", "_") as
-        | "consultation"
-        | "follow_up"
-        | "procedure",
-      location:
-        appointmentLocation ||
-        `${selectedBookingDoctor.department || "General"} Department`,
-      status: "scheduled",
-      isVirtual: false,
-      createdBy: user?.id,
-    };
+    const patient = patients?.find((p: any) => p.id === appointmentData.patientId || p.id.toString() === selectedPatient || p.patientId === selectedPatient);
+
+    if (user?.role === "patient") {
+      if (!patient) {
+        toast({
+          title: "Patient Missing",
+          description: "Unable to locate the patient record for invoicing.",
+          variant: "destructive",
+        });
+        setBookingInProgress(null);
+        return;
+      }
+
+      const amount = parseFloat(invoiceForm.amount || "0");
+      const invoiceData = {
+        patientId: patient.patientId || patient.id.toString(),
+        patientName: `${patient.firstName} ${patient.lastName}`,
+        nhsNumber: patient.nhsNumber || "",
+        dateOfService: invoiceForm.serviceDate,
+        invoiceDate: invoiceForm.invoiceDate,
+        dueDate: invoiceForm.dueDate,
+        status: "sent",
+        invoiceType: "payment",
+        paymentMethod: invoiceForm.paymentMethod,
+        subtotal: invoiceForm.amount,
+        tax: "0",
+        discount: "0",
+        totalAmount: invoiceForm.amount,
+        paidAmount: invoiceForm.paymentMethod === "Cash" ? invoiceForm.amount : "0",
+        items: [
+          {
+            code: invoiceForm.serviceCode,
+            description: invoiceForm.serviceDescription,
+            quantity: 1,
+            unitPrice: amount,
+            total: amount,
+          },
+        ],
+        insuranceProvider: invoiceForm.insuranceProvider,
+        notes: invoiceForm.notes,
+      };
+
+      createAppointmentAndInvoiceMutation.mutate({
+        appointmentData,
+        invoiceData,
+      });
+      return;
+    }
 
     bookAppointmentMutation.mutate(appointmentData);
   };
 
   const openBookingDialog = (doctor: Doctor) => {
+    resetBookingForm();
     setSelectedBookingDoctor(doctor);
     // Auto-select the logged-in patient if user is a patient
     if (patients && patients.length > 0) {
@@ -1414,7 +1711,7 @@ export function DoctorList({
             </div>
 
             {/* Working Hours */}
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 gap-4">
               <div>
                 <Label htmlFor="startTime" className="text-sm font-medium">
                   Start Time
@@ -1486,6 +1783,56 @@ export function DoctorList({
         </DialogContent>
       </Dialog>
 
+      {/* Stripe Payment Dialog */}
+      <Dialog open={!!stripeClientSecret} onOpenChange={(open) => {
+        if (!open) {
+          setStripeClientSecret("");
+          setCreatedInvoiceId(null);
+        }
+      }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <CreditCard className="h-5 w-5" />
+              Complete Payment
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-4">
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              Please complete your payment to confirm the appointment booking.
+            </p>
+            {stripeClientSecret && (
+              <Elements stripe={stripePromise} options={{ clientSecret: stripeClientSecret }}>
+                <StripePaymentForm
+                  onSuccess={async () => {
+                    if (createdInvoiceId) {
+                      try {
+                        await apiRequest("PATCH", `/api/billing/invoices/${createdInvoiceId}`, {
+                          status: "paid",
+                        });
+                      } catch (error) {
+                        console.error("Failed to update invoice status:", error);
+                      }
+                    }
+                    setStripeClientSecret("");
+                    setCreatedInvoiceId(null);
+                    setIsSuccessModalOpen(true);
+                  }}
+                  onCancel={() => {
+                    setStripeClientSecret("");
+                    setCreatedInvoiceId(null);
+                    toast({
+                      title: "Payment Cancelled",
+                      description: "Your appointment has been created. You can complete payment later from the billing section.",
+                    });
+                  }}
+                />
+              </Elements>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Booking Dialog */}
       <Dialog open={isBookingOpen} onOpenChange={(open) => {
         setIsBookingOpen(open);
@@ -1513,17 +1860,27 @@ export function DoctorList({
                 <Label className="text-sm font-medium">Appointment Type</Label>
                 <Select
                   value={appointmentType}
-                  onValueChange={setAppointmentType}
+                  onValueChange={(value) => {
+                    const normalized = value as "consultation" | "treatment";
+                    setAppointmentType(normalized);
+                    setSelectedTreatment(null);
+                    setSelectedConsultation(null);
+                    setTreatmentSelectionError("");
+                    setConsultationSelectionError("");
+                    setAppointmentTypeError("");
+                  }}
                 >
                   <SelectTrigger className="mt-1">
                     <SelectValue placeholder="Select Type" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="Consultation">Consultation</SelectItem>
-                    <SelectItem value="Follow-up">Follow-up</SelectItem>
-                    <SelectItem value="Procedure">Procedure</SelectItem>
+                    <SelectItem value="consultation">Consultation</SelectItem>
+                    <SelectItem value="treatment">Treatment</SelectItem>
                   </SelectContent>
                 </Select>
+                {appointmentTypeError && (
+                  <p className="text-red-500 text-xs mt-1">{appointmentTypeError}</p>
+                )}
               </div>
               <div>
                 <Label className="text-sm font-medium">Duration (minutes)</Label>
@@ -1538,8 +1895,121 @@ export function DoctorList({
                     <SelectItem value="15">15 minutes</SelectItem>
                     <SelectItem value="30">30 minutes</SelectItem>
                     <SelectItem value="60">60 minutes</SelectItem>
+                    <SelectItem value="90">90 minutes</SelectItem>
+                    <SelectItem value="120">120 minutes (2 hours)</SelectItem>
+                    <SelectItem value="180">180 minutes (3 hours)</SelectItem>
                   </SelectContent>
                 </Select>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                {appointmentType === "treatment" && (
+                  <div>
+                    <Label className="text-sm font-medium">Select Treatment</Label>
+                    <Popover open={openTreatmentCombo} onOpenChange={setOpenTreatmentCombo}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          role="combobox"
+                          aria-expanded={openTreatmentCombo}
+                          className="w-full justify-between mt-1"
+                        >
+                          {selectedTreatment ? selectedTreatment.name : "Select a treatment"}
+                          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-full p-0" align="start">
+                        <Command>
+                          <CommandInput placeholder="Search treatments..." />
+                          <CommandList>
+                            <CommandEmpty>No treatments found.</CommandEmpty>
+                            <CommandGroup>
+                              {treatmentsList.map((treatment: any) => (
+                                <CommandItem
+                                  key={treatment.id}
+                                  value={String(treatment.id)}
+                                  onSelect={() => {
+                                    setSelectedTreatment(treatment);
+                                    setTreatmentSelectionError("");
+                                    setOpenTreatmentCombo(false);
+                                  }}
+                                >
+                                  <div className="flex items-center gap-2 w-full">
+                                    <span
+                                      className="inline-flex h-3 w-3 rounded-full border border-gray-300"
+                                      style={{
+                                        backgroundColor: treatment.colorCode || "#D1D5DB",
+                                      }}
+                                    />
+                                    <span className="flex-1 text-left">{treatment.name}</span>
+                                    <span className="text-xs text-gray-500">
+                                      {treatment.currency || "GBP"} {treatment.basePrice}
+                                    </span>
+                                  </div>
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                    {treatmentSelectionError && (
+                      <p className="text-red-500 text-xs mt-1">{treatmentSelectionError}</p>
+                    )}
+                  </div>
+                )}
+
+                {appointmentType === "consultation" && (
+                  <div>
+                    <Label className="text-sm font-medium">Select Consultation</Label>
+                    <Popover open={openConsultationCombo} onOpenChange={setOpenConsultationCombo}>
+                      <PopoverTrigger asChild>
+                        <Button
+                          variant="outline"
+                          role="combobox"
+                          aria-expanded={openConsultationCombo}
+                          className="w-full justify-between mt-1"
+                        >
+                          {selectedConsultation ? selectedConsultation.serviceName || selectedConsultation.service_name : "Select a consultation"}
+                          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-full p-0" align="start">
+                        <Command>
+                          <CommandInput placeholder="Search consultations..." />
+                          <CommandList>
+                            <CommandEmpty>No consultations found.</CommandEmpty>
+                            <CommandGroup>
+                              {consultationServices.map((service: any) => (
+                                <CommandItem
+                                  key={service.id}
+                                  value={String(service.id)}
+                                  onSelect={() => {
+                                    setSelectedConsultation(service);
+                                    setConsultationSelectionError("");
+                                    setOpenConsultationCombo(false);
+                                  }}
+                                >
+                                  <div className="flex items-center gap-2 w-full justify-between">
+                                    <span className="flex-1 text-left">{service.serviceName || service.service_name}</span>
+                                    <span className="text-xs text-gray-500">
+                                      {service.currency || "GBP"} {service.price}
+                                    </span>
+                                  </div>
+                                </CommandItem>
+                              ))}
+                            </CommandGroup>
+                          </CommandList>
+                        </Command>
+                      </PopoverContent>
+                    </Popover>
+                    {consultationSelectionError && (
+                      <p className="text-red-500 text-xs mt-1">{consultationSelectionError}</p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -1748,33 +2218,35 @@ export function DoctorList({
             </div>
 
             {/* Fourth Row - Title and Booking Summary */}
-            <div className="border-t border-gray-200 dark:border-gray-700 pt-3">
-              <div className="grid grid-cols-2 gap-3 mb-3">
-                {/* Title Field */}
-                <div>
-                  <Label className="text-sm font-medium">Title (optional)</Label>
-                  <Input
-                    type="text"
-                    placeholder="Enter appointment title"
-                    value={appointmentTitle}
-                    onChange={(e) => setAppointmentTitle(e.target.value)}
-                    className="mt-1"
-                  />
-                </div>
-                
-                {/* Description */}
-                <div>
-                  <Label className="text-sm font-medium">Description</Label>
-                  <Input
-                    type="text"
-                    placeholder="Enter appointment description"
-                    value={appointmentDescription}
-                    onChange={(e) => setAppointmentDescription(e.target.value)}
-                    className="mt-1"
-                  />
+            {user?.role !== "admin" && (
+              <div className="border-t border-gray-200 dark:border-gray-700 pt-3">
+                <div className="grid grid-cols-2 gap-3 mb-3">
+                  {/* Title Field */}
+                  <div>
+                    <Label className="text-sm font-medium">Title (optional)</Label>
+                    <Input
+                      type="text"
+                      placeholder="Enter appointment title"
+                      value={appointmentTitle}
+                      onChange={(e) => setAppointmentTitle(e.target.value)}
+                      className="mt-1"
+                    />
+                  </div>
+                  
+                  {/* Description */}
+                  <div>
+                    <Label className="text-sm font-medium">Description</Label>
+                    <Input
+                      type="text"
+                      placeholder="Enter appointment description"
+                      value={appointmentDescription}
+                      onChange={(e) => setAppointmentDescription(e.target.value)}
+                      className="mt-1"
+                    />
+                  </div>
                 </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Action Buttons */}
@@ -1819,7 +2291,18 @@ export function DoctorList({
                 <div className="space-y-3">
                   <div>
                     <Label className="text-xs font-medium text-gray-600 dark:text-gray-400">Appointment Type</Label>
-                    <p className="text-sm font-medium">{appointmentType}</p>
+                  <p className="text-sm font-medium">{appointmentTypeLabel}</p>
+                  {selectedServiceInfo && (
+                    <div className="flex items-center gap-2 mt-1">
+                      <span
+                        className="inline-flex h-2 w-2 rounded-full border border-gray-300"
+                        style={{ backgroundColor: selectedServiceInfo.color }}
+                      />
+                      <span className="text-xs text-gray-500">
+                        {selectedServiceInfo.label} • {selectedServiceInfo.price}
+                      </span>
+                    </div>
+                  )}
                   </div>
                   <div>
                     <Label className="text-xs font-medium text-gray-600 dark:text-gray-400">Patient</Label>
@@ -1858,20 +2341,240 @@ export function DoctorList({
             </div>
           </div>
 
+          {user?.role === "patient" && (
+            <div className="border rounded-lg p-4 bg-gray-50 dark:bg-gray-700 mt-4">
+              <h3 className="font-semibold text-lg text-gray-900 dark:text-white mb-4 flex items-center gap-2">
+                <FileText className="h-5 w-5" />
+                Invoice Details
+              </h3>
+              <div className="space-y-3">
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600 dark:text-gray-400">Service</span>
+                  <span className="font-medium text-gray-900 dark:text-white">
+                    {invoiceForm.serviceDescription}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600 dark:text-gray-400">Service Code</span>
+                  <span className="font-medium text-gray-900 dark:text-white">
+                    {invoiceForm.serviceCode}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600 dark:text-gray-400">Payment Method</span>
+                  <span className="font-medium text-gray-900 dark:text-white">
+                    {invoiceForm.paymentMethod}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span className="text-gray-600 dark:text-gray-400">Insurance Provider</span>
+                  <span className="font-medium text-gray-900 dark:text-white">
+                    {invoiceForm.insuranceProvider}
+                  </span>
+                </div>
+                <div className="flex justify-between text-lg font-semibold border-t pt-2">
+                  <span className="text-gray-900 dark:text-white">Total</span>
+                  <span className="text-blue-600 dark:text-blue-300">£{invoiceForm.amount}</span>
+                </div>
+                {invoiceForm.notes && (
+                  <div>
+                    <span className="text-gray-600 dark:text-gray-400 block text-sm mb-1">Notes</span>
+                    <p className="text-sm text-gray-900 dark:text-white bg-white dark:bg-gray-600 p-2 rounded">
+                      {invoiceForm.notes}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="flex justify-end gap-3 pt-4">
-            <Button 
-              variant="outline" 
-              onClick={() => setIsConfirmationOpen(false)}
-              disabled={bookAppointmentMutation.isPending}
+            <Button
+              variant="outline"
+              onClick={() => {
+                setIsConfirmationOpen(false);
+                if (isPatientBookingFlow) {
+                  setShowInvoiceModal(true);
+                } else {
+                  setIsBookingOpen(true);
+                }
+              }}
+              disabled={confirmMutationPending}
             >
               Go Back
             </Button>
             <Button
               onClick={handleBookAppointment}
-              disabled={bookAppointmentMutation.isPending}
+              disabled={confirmMutationPending}
               className="bg-blue-600 hover:bg-blue-700 text-white"
             >
-              {bookAppointmentMutation.isPending ? "Confirming..." : "Confirm"}
+              {isPatientBookingFlow
+                ? confirmMutationPending
+                  ? "Processing..."
+                  : "Confirm & Pay"
+                : confirmMutationPending
+                  ? "Confirming..."
+                  : "Confirm"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Invoice Creation Modal */}
+      <Dialog open={showInvoiceModal} onOpenChange={(open) => {
+        if (!open) {
+          setShowInvoiceModal(false);
+        }
+      }}>
+        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Create New Invoice</DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-5">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label className="text-sm font-medium text-gray-900 dark:text-white">Patient</Label>
+                <Input
+                  value={
+                    (() => {
+                      const patient =
+                        patients?.find((p: any) => p.id.toString() === selectedPatient) ||
+                        patients?.find((p: any) => p.patientId === selectedPatient);
+                      return patient ? `${patient.firstName} ${patient.lastName}` : "Patient";
+                    })()
+                  }
+                  disabled
+                  className="mt-1 bg-gray-50 dark:bg-gray-700"
+                />
+              </div>
+              <div>
+                <Label className="text-sm font-medium text-gray-900 dark:text-white">Doctor</Label>
+                <Input
+                  value={
+                    selectedBookingDoctor
+                      ? `Dr. ${selectedBookingDoctor.firstName} ${selectedBookingDoctor.lastName}`
+                      : "Doctor"
+                  }
+                  disabled
+                  className="mt-1 bg-gray-50 dark:bg-gray-700"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-4">
+              <div>
+                <Label className="text-sm font-medium text-gray-900 dark:text-white">Service Date</Label>
+                <Input
+                  type="date"
+                  value={invoiceForm.serviceDate}
+                  disabled
+                  className="mt-1 bg-gray-50 dark:bg-gray-700"
+                />
+              </div>
+              <div>
+                <Label className="text-sm font-medium text-gray-900 dark:text-white">Invoice Date</Label>
+                <Input
+                  type="date"
+                  value={invoiceForm.invoiceDate}
+                  disabled
+                  className="mt-1 bg-gray-50 dark:bg-gray-700"
+                />
+              </div>
+              <div>
+                <Label className="text-sm font-medium text-gray-900 dark:text-white">Due Date</Label>
+                <Input
+                  type="date"
+                  value={invoiceForm.dueDate}
+                  disabled
+                  className="mt-1 bg-gray-50 dark:bg-gray-700"
+                />
+              </div>
+            </div>
+
+            <div className="bg-gray-50 dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-4 space-y-3">
+              <p className="text-sm font-semibold text-gray-700 dark:text-gray-200">Services & Procedures</p>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <Input
+                    value={invoiceForm.serviceCode}
+                    disabled
+                    className="mt-1 bg-gray-50 dark:bg-gray-700"
+                  />
+                </div>
+                <div>
+                  <Input
+                    value={invoiceForm.serviceDescription}
+                    disabled
+                    className="mt-1 bg-gray-50 dark:bg-gray-700"
+                  />
+                </div>
+                <div>
+                  <Input
+                    type="number"
+                    step="0.01"
+                    value={invoiceForm.amount}
+                    disabled
+                    className="mt-1 bg-gray-50 dark:bg-gray-700"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label className="text-sm font-medium text-gray-900 dark:text-white">Insurance Provider</Label>
+                <Input
+                  value={invoiceForm.insuranceProvider}
+                  disabled
+                  className="mt-1 bg-gray-50 dark:bg-gray-700"
+                />
+              </div>
+              <div>
+                <Label className="text-sm font-medium text-gray-900 dark:text-white">Payment Method</Label>
+                <Input
+                  value={invoiceForm.paymentMethod}
+                  disabled
+                  className="mt-1 bg-gray-50 dark:bg-gray-700"
+                />
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-sm font-medium text-gray-900 dark:text-white">Notes</Label>
+              <Textarea
+                value={invoiceForm.notes}
+                rows={3}
+                className="mt-1 bg-gray-50 dark:bg-gray-700"
+                disabled
+              />
+            </div>
+
+            <div className="border-t border-gray-200 dark:border-gray-700 pt-3">
+              <p className="text-xs uppercase tracking-wide text-gray-500">Total Amount</p>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white">£{invoiceForm.amount}</p>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-3 pt-4 border-t mt-4">
+            <Button
+              variant="outline"
+              onClick={() => {
+                setShowInvoiceModal(false);
+                setIsBookingOpen(true);
+                setPendingAppointmentData(null);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                setShowInvoiceModal(false);
+                setIsConfirmationOpen(true);
+              }}
+              className="bg-blue-600 hover:bg-blue-700 text-white"
+            >
+              Review Booking
             </Button>
           </div>
         </DialogContent>
@@ -1902,15 +2605,7 @@ export function DoctorList({
             <Button
               onClick={() => {
                 setIsSuccessModalOpen(false);
-                // Reset form
-                setSelectedPatient("");
-                setSelectedDate(undefined);
-                setSelectedTimeSlot("");
-                setAppointmentType("Consultation");
-                setDuration("30");
-                setAppointmentTitle("");
-                setAppointmentDescription("");
-                setAppointmentLocation("");
+                resetBookingForm();
               }}
               className="bg-blue-600 hover:bg-blue-700 text-white"
             >
@@ -1954,554 +2649,98 @@ export function DoctorList({
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Create New Invoice Dialog */}
-      {showInvoiceModal && !showBookingSummary && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <div className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-xl font-bold text-blue-700 dark:text-blue-400">
-                    Create New Invoice
-                  </h2>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                    Invoice details for the appointment
-                  </p>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setShowInvoiceModal(false);
-                  }}
-                  data-testid="button-close-invoice"
-                >
-                  <span className="text-lg">×</span>
-                </Button>
-              </div>
-
-              <div className="space-y-4">
-                {/* Patient and Service Date */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label className="text-sm font-medium text-gray-900 dark:text-white">Patient</Label>
-                    <Input
-                      value={(() => {
-                        const patient = patients?.find((p: any) => p.id.toString() === selectedPatient);
-                        return patient ? `${patient.firstName} ${patient.lastName}` : 'N/A';
-                      })()}
-                      disabled
-                      className="mt-1 bg-gray-50 dark:bg-gray-700"
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-sm font-medium text-gray-900 dark:text-white">Service Date</Label>
-                    <Input
-                      type="date"
-                      value={invoiceForm.serviceDate}
-                      disabled
-                      className="mt-1 bg-gray-50 dark:bg-gray-700"
-                    />
-                  </div>
-                </div>
-
-                {/* Doctor */}
-                <div>
-                  <Label className="text-sm font-medium text-gray-900 dark:text-white">Doctor</Label>
-                  <Input
-                    value={selectedBookingDoctor ? `${selectedBookingDoctor.firstName} ${selectedBookingDoctor.lastName}` : 'N/A'}
-                    disabled
-                    className="mt-1 bg-gray-50 dark:bg-gray-700"
-                  />
-                </div>
-
-                {/* Dates */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label className="text-sm font-medium text-gray-900 dark:text-white">Invoice Date</Label>
-                    <Input
-                      type="date"
-                      value={invoiceForm.invoiceDate}
-                      disabled
-                      className="mt-1 bg-gray-50 dark:bg-gray-700"
-                    />
-                  </div>
-                  <div>
-                    <Label className="text-sm font-medium text-gray-900 dark:text-white">Due Date</Label>
-                    <Input
-                      type="date"
-                      value={invoiceForm.dueDate}
-                      disabled
-                      className="mt-1 bg-gray-50 dark:bg-gray-700"
-                    />
-                  </div>
-                </div>
-
-                {/* Services & Procedures */}
-                <div className="border rounded-lg p-4 bg-gray-50 dark:bg-gray-700">
-                  <h5 className="font-semibold text-gray-900 dark:text-white mb-3">Services & Procedures</h5>
-                  <div className="grid grid-cols-3 gap-4">
-                    <div>
-                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">Code</Label>
-                      <Input
-                        value={invoiceForm.serviceCode}
-                        disabled
-                        className="mt-1 bg-gray-50 dark:bg-gray-700"
-                      />
-                    </div>
-                    <div>
-                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">Description</Label>
-                      <Input
-                        value={invoiceForm.serviceDescription}
-                        disabled
-                        className="mt-1 bg-gray-50 dark:bg-gray-700"
-                      />
-                    </div>
-                    <div>
-                      <Label className="text-sm font-medium text-gray-700 dark:text-gray-300">Amount</Label>
-                      <Input
-                        value={invoiceForm.amount}
-                        disabled
-                        className="mt-1 bg-gray-50 dark:bg-gray-700"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Insurance Provider */}
-                <div>
-                  <Label className="text-sm font-medium text-gray-900 dark:text-white">Insurance Provider</Label>
-                  <Input
-                    value={invoiceForm.insuranceProvider}
-                    disabled
-                    className="mt-1 bg-gray-50 dark:bg-gray-700"
-                  />
-                </div>
-
-                {/* Total Amount */}
-                <div>
-                  <Label className="text-sm font-medium text-gray-900 dark:text-white">Total Amount</Label>
-                  <Input
-                    value={invoiceForm.amount}
-                    disabled
-                    className="mt-1 bg-gray-50 dark:bg-gray-700"
-                  />
-                </div>
-
-                {/* Notes */}
-                <div>
-                  <Label className="text-sm font-medium text-gray-900 dark:text-white">Notes</Label>
-                  <Input
-                    value={invoiceForm.notes}
-                    disabled
-                    className="mt-1 bg-gray-50 dark:bg-gray-700"
-                  />
-                </div>
-
-                {/* Payment Method */}
-                <div>
-                  <Label className="text-sm font-medium text-gray-900 dark:text-white">Payment Method</Label>
-                  {user?.role?.toLowerCase() === 'admin' ? (
-                    <Select
-                      value={invoiceForm.paymentMethod}
-                      onValueChange={(value) => setInvoiceForm({...invoiceForm, paymentMethod: value})}
-                    >
-                      <SelectTrigger className="mt-1" data-testid="select-payment-method">
-                        <SelectValue placeholder="Select payment method" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Cash">Cash</SelectItem>
-                        <SelectItem value="Credit Card">Credit Card</SelectItem>
-                        <SelectItem value="Debit Card">Debit Card</SelectItem>
-                        <SelectItem value="Insurance">Insurance</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  ) : (
-                    <Input
-                      value={invoiceForm.paymentMethod}
-                      disabled
-                      className="mt-1 bg-gray-50 dark:bg-gray-700"
-                    />
-                  )}
-                </div>
-
-                {/* Action Buttons */}
-                <div className="flex justify-end gap-3 pt-4">
-                  <Button
-                    variant="outline"
-                    onClick={() => setShowInvoiceModal(false)}
-                  >
-                    Cancel
-                  </Button>
-                  <Button
-                    onClick={async () => {
-                      const isCardPayment = invoiceForm.paymentMethod === "Credit Card" || invoiceForm.paymentMethod === "Debit Card";
-                      const isCashPayment = invoiceForm.paymentMethod === "Cash";
-                      
-                      if (isCardPayment) {
-                        // For card payments, create appointment/invoice and open Stripe directly
-                        try {
-                          const scheduledAt = selectedDate && selectedTimeSlot 
-                            ? new Date(`${format(selectedDate, 'yyyy-MM-dd')}T${selectedTimeSlot}:00`)
-                            : new Date();
-
-                          const response = await apiRequest('POST', '/api/appointments-with-invoice', {
-                            patientId: parseInt(selectedPatient),
-                            providerId: selectedBookingDoctor?.id,
-                            assignedRole: selectedBookingDoctor?.role || 'doctor',
-                            scheduledAt: scheduledAt.toISOString(),
-                            duration: parseInt(duration),
-                            type: appointmentType.toLowerCase(),
-                            status: 'scheduled',
-                            title: appointmentTitle || `Appointment with ${selectedBookingDoctor?.firstName} ${selectedBookingDoctor?.lastName}`,
-                            description: appointmentDescription,
-                            location: appointmentLocation || selectedBookingDoctor?.department || 'General',
-                            isVirtual: false,
-                            invoice: {
-                              serviceDate: invoiceForm.serviceDate,
-                              invoiceDate: invoiceForm.invoiceDate,
-                              dueDate: invoiceForm.dueDate,
-                              serviceCode: invoiceForm.serviceCode,
-                              serviceDescription: invoiceForm.serviceDescription,
-                              amount: invoiceForm.amount,
-                              insuranceProvider: invoiceForm.insuranceProvider,
-                              notes: invoiceForm.notes,
-                              paymentMethod: invoiceForm.paymentMethod,
-                              status: 'pending'
-                            }
-                          });
-
-                          const data = await response.json();
-                          const invoice = data.invoice;
-
-                          if (invoice) {
-                            setCreatedInvoiceId(invoice.id);
-                            setInvoiceStatus('pending');
-
-                            // Create Stripe payment intent
-                            const paymentIntentResponse = await apiRequest('POST', '/api/billing/create-payment-intent', {
-                              invoiceId: invoice.id,
-                              amount: parseFloat(invoiceForm.amount),
-                              description: `Appointment booking - Invoice #${invoice.id}`
-                            });
-                            const paymentData = await paymentIntentResponse.json();
-
-                            if (paymentData.clientSecret) {
-                              setStripeClientSecret(paymentData.clientSecret);
-                              setShowInvoiceModal(false);
-                            } else {
-                              throw new Error('Failed to create payment intent');
-                            }
-                          }
-
-                          queryClient.invalidateQueries({ queryKey: ['/api/appointments'] });
-                          queryClient.invalidateQueries({ queryKey: ['/api/invoices'] });
-
-                        } catch (error) {
-                          console.error("Failed to create appointment:", error);
-                          toast({
-                            title: "Error",
-                            description: "Failed to create appointment. Please try again.",
-                            variant: "destructive"
-                          });
-                        }
-                      } else {
-                        // For non-card payments, show booking summary
-                        setShowBookingSummary(true);
-                      }
-                    }}
-                    className="bg-blue-600 hover:bg-blue-700 text-white"
-                  >
-                    Review & Confirm
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Booking Summary Dialog */}
-      {showInvoiceModal && showBookingSummary && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-xl max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
-            <div className="p-6">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h2 className="text-xl font-bold text-blue-700 dark:text-blue-400">
-                    Booking Summary
-                  </h2>
-                  <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                    Review appointment and invoice details before confirming
-                  </p>
-                </div>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => {
-                    setShowInvoiceModal(false);
-                    setShowBookingSummary(false);
-                  }}
-                  data-testid="button-close-summary"
-                >
-                  <span className="text-lg">×</span>
-                </Button>
-              </div>
-
-              {/* Appointment Details Card */}
-              <div className="border rounded-lg p-4 mb-4 bg-gray-50 dark:bg-gray-700">
-                <div className="flex items-center gap-2 mb-3">
-                  <CalendarIcon className="h-5 w-5 text-gray-600 dark:text-gray-400" />
-                  <h3 className="font-semibold text-gray-900 dark:text-white">Appointment Details</h3>
-                </div>
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label className="text-xs text-gray-500 dark:text-gray-400">Patient</Label>
-                    <p className="font-medium text-gray-900 dark:text-white">
-                      {(() => {
-                        const patient = patients?.find((p: any) => p.id.toString() === selectedPatient);
-                        return patient ? `${patient.firstName} ${patient.lastName}` : 'N/A';
-                      })()}
-                    </p>
-                  </div>
-                  <div>
-                    <Label className="text-xs text-gray-500 dark:text-gray-400">Doctor</Label>
-                    <p className="font-medium text-gray-900 dark:text-white">
-                      {selectedBookingDoctor ? `${selectedBookingDoctor.firstName} ${selectedBookingDoctor.lastName}` : 'N/A'}
-                    </p>
-                  </div>
-                  <div>
-                    <Label className="text-xs text-gray-500 dark:text-gray-400">Date & Time</Label>
-                    <p className="font-medium text-gray-900 dark:text-white">
-                      {selectedDate ? format(selectedDate, 'PPP') : 'N/A'}, {(() => {
-                        if (!selectedTimeSlot) return 'N/A';
-                        const [hours, minutes] = selectedTimeSlot.split(':').map(Number);
-                        const hour12 = hours === 0 ? 12 : hours > 12 ? hours - 12 : hours;
-                        const period = hours < 12 ? 'AM' : 'PM';
-                        return `${hour12}:${minutes.toString().padStart(2, '0')} ${period}`;
-                      })()}
-                    </p>
-                  </div>
-                  <div>
-                    <Label className="text-xs text-gray-500 dark:text-gray-400">Duration</Label>
-                    <p className="font-medium text-gray-900 dark:text-white">{duration} minutes</p>
-                  </div>
-                  <div>
-                    <Label className="text-xs text-gray-500 dark:text-gray-400">Type</Label>
-                    <p className="font-medium text-gray-900 dark:text-white">{appointmentType}</p>
-                  </div>
-                  <div>
-                    <Label className="text-xs text-gray-500 dark:text-gray-400">Location</Label>
-                    <p className="font-medium text-gray-900 dark:text-white">
-                      {appointmentLocation || selectedBookingDoctor?.department || 'General'}
-                    </p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Invoice Details Card */}
-              <div className="border rounded-lg p-4 mb-4 bg-gray-50 dark:bg-gray-700">
-                <div className="flex items-center gap-2 mb-3">
-                  <svg className="h-5 w-5 text-gray-600 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                  </svg>
-                  <h3 className="font-semibold text-gray-900 dark:text-white">Invoice Details</h3>
-                </div>
-                <div className="space-y-2">
-                  <div className="flex justify-between">
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Service</span>
-                    <span className="font-medium text-gray-900 dark:text-white">{invoiceForm.serviceDescription}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Service Code</span>
-                    <span className="font-medium text-gray-900 dark:text-white">{invoiceForm.serviceCode}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Invoice Date</span>
-                    <span className="font-medium text-gray-900 dark:text-white">{invoiceForm.invoiceDate ? format(new Date(invoiceForm.invoiceDate), 'PP') : 'N/A'}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Due Date</span>
-                    <span className="font-medium text-gray-900 dark:text-white">{invoiceForm.dueDate ? format(new Date(invoiceForm.dueDate), 'PP') : 'N/A'}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Payment Method</span>
-                    <span className="font-medium text-gray-900 dark:text-white">{invoiceForm.paymentMethod}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Insurance Provider</span>
-                    <span className="font-medium text-gray-900 dark:text-white">{invoiceForm.insuranceProvider}</span>
-                  </div>
-                  <div className="flex justify-between pt-2 border-t">
-                    <span className="text-sm font-semibold text-gray-900 dark:text-white">Total Amount</span>
-                    <span className="text-lg font-bold text-blue-600 dark:text-blue-400">£{invoiceForm.amount}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-sm text-gray-600 dark:text-gray-400">Status</span>
-                    <span className="font-medium text-gray-900 dark:text-white">Pending</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="flex justify-end gap-3 pt-4">
-                <Button
-                  variant="outline"
-                  onClick={() => setShowBookingSummary(false)}
-                >
-                  Back to Edit
-                </Button>
-                <Button
-                  onClick={async () => {
-                    // Create the appointment and invoice first
-                    try {
-                      const scheduledAt = selectedDate && selectedTimeSlot 
-                        ? new Date(`${format(selectedDate, 'yyyy-MM-dd')}T${selectedTimeSlot}:00`)
-                        : new Date();
-
-                      // Create appointment with invoice
-                      const response = await apiRequest('POST', '/api/appointments-with-invoice', {
-                        patientId: parseInt(selectedPatient),
-                        providerId: selectedBookingDoctor?.id,
-                        assignedRole: selectedBookingDoctor?.role || 'doctor',
-                        scheduledAt: scheduledAt.toISOString(),
-                        duration: parseInt(duration),
-                        type: appointmentType.toLowerCase(),
-                        status: 'scheduled',
-                        title: appointmentTitle || `Appointment with ${selectedBookingDoctor?.firstName} ${selectedBookingDoctor?.lastName}`,
-                        description: appointmentDescription,
-                        location: appointmentLocation || selectedBookingDoctor?.department || 'General',
-                        isVirtual: false,
-                        invoice: {
-                          serviceDate: invoiceForm.serviceDate,
-                          invoiceDate: invoiceForm.invoiceDate,
-                          dueDate: invoiceForm.dueDate,
-                          serviceCode: invoiceForm.serviceCode,
-                          serviceDescription: invoiceForm.serviceDescription,
-                          amount: invoiceForm.amount,
-                          insuranceProvider: invoiceForm.insuranceProvider,
-                          notes: invoiceForm.notes,
-                          paymentMethod: invoiceForm.paymentMethod,
-                          status: 'pending'
-                        }
-                      });
-
-                      const data = await response.json();
-                      const invoice = data.invoice;
-
-                      if (invoice) {
-                        setCreatedInvoiceId(invoice.id);
-                        setInvoiceStatus('pending');
-
-                        // For Cash payments, skip Stripe and show success directly
-                        if (invoiceForm.paymentMethod === "Cash") {
-                          setShowBookingSummary(false);
-                          setShowInvoiceModal(false);
-                          setIsSuccessModalOpen(true);
-                          toast({
-                            title: "Appointment Booked",
-                            description: "Appointment has been created successfully. Cash payment recorded.",
-                          });
-                        } else {
-                          // Create Stripe payment intent for card payments
-                          try {
-                            const paymentIntentResponse = await apiRequest('POST', '/api/billing/create-payment-intent', {
-                              invoiceId: invoice.id,
-                              amount: parseFloat(invoiceForm.amount),
-                              description: `Appointment booking - Invoice #${invoice.id}`
-                            });
-                            const paymentData = await paymentIntentResponse.json();
-
-                            if (paymentData.clientSecret) {
-                              setStripeClientSecret(paymentData.clientSecret);
-                              setShowBookingSummary(false);
-                              setShowInvoiceModal(false);
-                            } else {
-                              // Payment intent failed, show success without payment
-                              setShowBookingSummary(false);
-                              setShowInvoiceModal(false);
-                              setIsSuccessModalOpen(true);
-                            }
-                          } catch (paymentError) {
-                            console.error("Failed to create payment intent:", paymentError);
-                            setShowBookingSummary(false);
-                            setShowInvoiceModal(false);
-                            setIsSuccessModalOpen(true);
-                          }
-                        }
-                      } else {
-                        setShowBookingSummary(false);
-                        setShowInvoiceModal(false);
-                        setIsSuccessModalOpen(true);
-                      }
-
-                      // Invalidate queries
-                      queryClient.invalidateQueries({ queryKey: ['/api/appointments'] });
-                      queryClient.invalidateQueries({ queryKey: ['/api/invoices'] });
-
-                    } catch (error) {
-                      console.error("Failed to create appointment:", error);
-                      toast({
-                        title: "Error",
-                        description: "Failed to create appointment. Please try again.",
-                        variant: "destructive"
-                      });
-                    }
-                  }}
-                  className="bg-green-600 hover:bg-green-700 text-white"
-                >
-                  Confirm Booking
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Stripe Payment Dialog */}
-      <Dialog open={!!stripeClientSecret} onOpenChange={(open) => !open && setStripeClientSecret("")}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <svg className="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                <rect x="1" y="4" width="22" height="16" rx="2" ry="2" strokeWidth="2"/>
-                <line x1="1" y1="10" x2="23" y2="10" strokeWidth="2"/>
-              </svg>
-              Complete Payment
-            </DialogTitle>
-          </DialogHeader>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
-            Please complete your payment to confirm your appointment booking.
-          </p>
-          {stripeClientSecret && (
-            <Elements stripe={stripePromise} options={{ clientSecret: stripeClientSecret }}>
-              <StripeCheckoutForm
-                onSuccess={async () => {
-                  // Update invoice status to paid
-                  if (createdInvoiceId) {
-                    try {
-                      await apiRequest('PATCH', `/api/billing/invoices/${createdInvoiceId}`, {
-                        status: 'paid'
-                      });
-                      setInvoiceStatus('paid');
-                      console.log("Invoice status updated to paid");
-                    } catch (error) {
-                      console.error("Failed to update invoice status:", error);
-                    }
-                  }
-                  setStripeClientSecret("");
-                  setIsSuccessModalOpen(true);
-                }}
-                onCancel={() => {
-                  // Payment cancelled, invoice status stays as 'sent'
-                  setStripeClientSecret("");
-                  setIsSuccessModalOpen(true);
-                }}
-              />
-            </Elements>
-          )}
-        </DialogContent>
-      </Dialog>
     </Card>
+  );
+}
+
+function StripePaymentForm({ onSuccess, onCancel }: { onSuccess: () => void; onCancel: () => void }) {
+  const stripe = useStripe();
+  const elements = useElements();
+  const [isProcessing, setIsProcessing] = useState(false);
+  const { toast } = useToast();
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+
+    if (!stripe || !elements) {
+      return;
+    }
+
+    setIsProcessing(true);
+
+    try {
+      const { error, paymentIntent } = await stripe.confirmPayment({
+        elements,
+        redirect: "if_required",
+      });
+
+      if (error) {
+        toast({
+          title: "Payment Failed",
+          description: error.message || "An error occurred while processing the payment.",
+          variant: "destructive",
+        });
+      } else if (paymentIntent && paymentIntent.status === "succeeded") {
+        const response = await apiRequest("POST", "/api/billing/process-payment", {
+          paymentIntentId: paymentIntent.id,
+        });
+
+        const contentType = response.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) {
+          throw new Error("Invalid response format from server");
+        }
+
+        const result = await response.json();
+        if (result.success) {
+          toast({
+            title: "Payment Successful",
+            description: "Your payment has been processed.",
+          });
+          onSuccess();
+        } else {
+          const errorMessage = result.error || "Payment processing failed";
+          toast({
+            title: "Payment Failed",
+            description: errorMessage,
+            variant: "destructive",
+          });
+        }
+      }
+    } catch (err) {
+      console.error("Payment error:", err);
+      toast({
+        title: "Payment Failed",
+        description: "An error occurred while processing your payment.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-4">
+      <div className="bg-white dark:bg-slate-900 p-4 rounded-lg border border-gray-200 dark:border-gray-700">
+        <PaymentElement />
+      </div>
+      <div className="flex gap-3">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onCancel}
+          disabled={isProcessing}
+          className="flex-1"
+        >
+          Cancel
+        </Button>
+        <Button
+          type="submit"
+          disabled={!stripe || isProcessing}
+          className="flex-1 bg-black hover:bg-black/90 text-white"
+        >
+          {isProcessing ? "Processing..." : "Complete Payment"}
+        </Button>
+      </div>
+    </form>
   );
 }

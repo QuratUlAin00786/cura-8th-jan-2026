@@ -116,8 +116,8 @@ export default function HRAppointments({ onNewAppointment }: { onNewAppointment?
   });
 
   // Weekly schedule for calendar view
-  const weekStart = startOfWeek(selectedDate);
-  const weekEnd = endOfWeek(selectedDate);
+  const weekStart = startOfWeek(selectedDate, { weekStartsOn: 1 });
+  const weekEnd = endOfWeek(selectedDate, { weekStartsOn: 1 });
   const weekDays = eachDayOfInterval({ start: weekStart, end: weekEnd });
 
   const getAppointmentsForDate = (date: Date) => {

@@ -470,6 +470,9 @@ export const appointments = pgTable("appointments", {
   duration: integer("duration").notNull().default(30), // minutes
   status: varchar("status", { length: 20 }).notNull().default("scheduled"), // scheduled, completed, cancelled, no_show, rescheduled
   type: varchar("type", { length: 20 }).notNull().default("consultation"), // consultation, follow_up, procedure, emergency, routine_checkup
+  appointmentType: varchar("appointment_type", { length: 20 }).notNull().default("consultation"),
+  treatmentId: integer("treatment_id"),
+  consultationId: integer("consultation_id"),
   location: text("location"),
   isVirtual: boolean("is_virtual").notNull().default(false),
   createdBy: integer("created_by"), // User ID who created the appointment
@@ -605,6 +608,91 @@ export const documents = pgTable("documents", {
   isTemplate: boolean("is_template").notNull().default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+// Dynamic Forms
+export const forms = pgTable("forms", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull(),
+  title: text("title").notNull(),
+  description: text("description"),
+  status: varchar("status", { length: 20 }).notNull().default("draft"),
+  metadata: jsonb("metadata").$type<Record<string, any>>().notNull().default({}),
+  createdBy: integer("created_by").references(() => users.id),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const formSections = pgTable("form_sections", {
+  id: serial("id").primaryKey(),
+  formId: integer("form_id").notNull().references(() => forms.id),
+  organizationId: integer("organization_id").notNull(),
+  title: text("title").notNull(),
+  order: integer("order").notNull().default(0),
+  metadata: jsonb("metadata").$type<Record<string, any>>().notNull().default({}),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const formFields = pgTable("form_fields", {
+  id: serial("id").primaryKey(),
+  sectionId: integer("section_id").notNull().references(() => formSections.id),
+  organizationId: integer("organization_id").notNull(),
+  label: text("label").notNull(),
+  fieldType: varchar("field_type", { length: 20 }).notNull(),
+  required: boolean("required").notNull().default(false),
+  placeholder: text("placeholder"),
+  fieldOptions: jsonb("field_options").$type<string[]>().default([]),
+  order: integer("order").notNull().default(0),
+  metadata: jsonb("metadata").$type<Record<string, any>>().notNull().default({}),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const formShares = pgTable("form_shares", {
+  id: serial("id").primaryKey(),
+  formId: integer("form_id").notNull().references(() => forms.id),
+  organizationId: integer("organization_id").notNull(),
+  patientId: integer("patient_id").notNull().references(() => patients.id),
+  sentBy: integer("sent_by").references(() => users.id),
+  token: text("token").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  status: varchar("status", { length: 20 }).notNull().default("pending"), // pending, submitted, expired
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const formShareLogs = pgTable("form_share_logs", {
+  id: serial("id").primaryKey(),
+  formId: integer("form_id").notNull().references(() => forms.id),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id),
+  patientId: integer("patient_id").notNull().references(() => patients.id),
+  sentBy: integer("sent_by").references(() => users.id),
+  link: text("link").notNull(),
+  emailSent: boolean("email_sent").notNull().default(false),
+  emailSubject: text("email_subject"),
+  emailHtml: text("email_html"),
+  emailText: text("email_text"),
+  emailError: text("email_error"),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+});
+
+export const formResponses = pgTable("form_responses", {
+  id: serial("id").primaryKey(),
+  shareId: integer("share_id").notNull().references(() => formShares.id),
+  organizationId: integer("organization_id").notNull(),
+  patientId: integer("patient_id").notNull().references(() => patients.id),
+  submittedAt: timestamp("submitted_at").defaultNow().notNull(),
+  metadata: jsonb("metadata").$type<Record<string, any>>().notNull().default({}),
+});
+
+export const formResponseValues = pgTable("form_response_values", {
+  id: serial("id").primaryKey(),
+  responseId: integer("response_id").notNull().references(() => formResponses.id),
+  fieldId: integer("field_id").notNull().references(() => formFields.id),
+  value: text("value"),
+  valueJson: jsonb("value_json").$type<Record<string, any>>(),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
 });
 
 // Subscriptions
@@ -2487,6 +2575,9 @@ export const insertAppointmentSchema = createInsertSchema(appointments).omit({
     invalid_type_error: "Duration must be a number"
   }).positive("Duration must be greater than 0").default(30),
   type: z.string().trim().min(1, "Appointment type is required"),
+  appointmentType: z.enum(["consultation", "treatment"]).default("consultation"),
+  treatmentId: z.number().int().optional().nullable(),
+  consultationId: z.number().int().optional().nullable(),
 });
 
 export const insertInvoiceSchema = createInsertSchema(invoices).omit({
@@ -3475,6 +3566,23 @@ export const imagingPricing = pgTable("imaging_pricing", {
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
 
+// Treatments Table
+export const treatments = pgTable("treatments", {
+  id: serial("id").primaryKey(),
+  organizationId: integer("organization_id").notNull().references(() => organizations.id),
+  name: text("name").notNull(),
+  colorCode: varchar("color_code", { length: 7 }).notNull().default("#2563eb"),
+  basePrice: decimal("base_price", { precision: 10, scale: 2 }).notNull().default(0),
+  currency: varchar("currency", { length: 3 }).notNull().default("GBP"),
+  version: integer("version").notNull().default(1),
+  isActive: boolean("is_active").notNull().default(true),
+  createdBy: integer("created_by").notNull().references(() => users.id),
+  notes: text("notes"),
+  metadata: jsonb("metadata").$type<{ [key: string]: any }>().default({}),
+  createdAt: timestamp("created_at").defaultNow().notNull(),
+  updatedAt: timestamp("updated_at").defaultNow().notNull(),
+});
+
 // Pricing Insert Schemas
 export const insertDoctorsFeeSchema = createInsertSchema(doctorsFee).omit({
   id: true,
@@ -3494,6 +3602,12 @@ export const insertImagingPricingSchema = createInsertSchema(imagingPricing).omi
   updatedAt: true,
 });
 
+export const insertTreatmentSchema = createInsertSchema(treatments).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
 // Pricing Types
 export type DoctorsFee = typeof doctorsFee.$inferSelect;
 export type InsertDoctorsFee = z.infer<typeof insertDoctorsFeeSchema>;
@@ -3503,6 +3617,8 @@ export type InsertLabTestPricing = z.infer<typeof insertLabTestPricingSchema>;
 
 export type ImagingPricing = typeof imagingPricing.$inferSelect;
 export type InsertImagingPricing = z.infer<typeof insertImagingPricingSchema>;
+export type Treatment = typeof treatments.$inferSelect;
+export type InsertTreatment = z.infer<typeof insertTreatmentSchema>;
 
 // QuickBooks Insert Schemas
 export const insertQuickBooksConnectionSchema = createInsertSchema(quickbooksConnections).omit({

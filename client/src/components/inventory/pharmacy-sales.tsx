@@ -198,6 +198,11 @@ export default function PharmacySales() {
   const { data: saleDetails } = useQuery<SaleDetails>({
     queryKey: ['/api/inventory/sales', selectedSale?.id],
     enabled: !!selectedSale?.id,
+    queryFn: async ({ queryKey }) => {
+      const [, saleId] = queryKey;
+      const response = await apiRequest("GET", `/api/inventory/sales/${saleId}`);
+      return response.json();
+    },
   });
 
   const handleSaleTypeChange = (newType: 'walk_in' | 'prescription') => {

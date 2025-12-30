@@ -195,6 +195,11 @@ export default function ReturnsManagement() {
   const { data: returnDetails } = useQuery<ReturnDetails>({
     queryKey: ['/api/inventory/returns', selectedReturn?.id],
     enabled: !!selectedReturn?.id,
+    queryFn: async ({ queryKey }) => {
+      const [, returnId] = queryKey;
+      const response = await apiRequest("GET", `/api/inventory/returns/${returnId}`);
+      return response.json();
+    },
   });
 
   const createReturnMutation = useMutation({

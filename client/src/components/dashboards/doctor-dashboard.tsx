@@ -3,12 +3,14 @@ import { useQuery } from "@tanstack/react-query";
 import { Users, Calendar, Brain, Stethoscope, Pill, FileText } from "lucide-react";
 import { Link } from "wouter";
 import { Button } from "@/components/ui/button";
+import { useAuth } from "@/hooks/use-auth";
 
 function getTenantSubdomain(): string {
   return localStorage.getItem('user_subdomain') || 'demo';
 }
 
 export function DoctorDashboard() {
+  const { user } = useAuth();
   const { data: stats, isLoading } = useQuery({
     queryKey: ["/api/dashboard/stats"],
   });
@@ -147,7 +149,9 @@ export function DoctorDashboard() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">Doctor Dashboard</h1>
+        <h1 className="text-3xl font-bold text-gray-900 dark:text-gray-100">
+          {user?.role === "nurse" ? "Nurse Dashboard" : "Doctor Dashboard"}
+        </h1>
         <p className="text-neutral-600">
           Clinical overview and patient management tools
         </p>

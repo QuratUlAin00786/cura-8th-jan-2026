@@ -51,7 +51,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/ui/accordion";
-import { useForm } from "react-hook-form";
+import { Resolver, SubmitHandler, useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Plus, Edit, Trash2, UserPlus, Shield, Stethoscope, Users, Calendar, User, TestTube, Lock, BookOpen, X, Check, LayoutGrid, LayoutList, Eye, EyeOff, ChevronsUpDown } from "lucide-react";
@@ -61,6 +61,7 @@ import { apiRequest, queryClient } from "@/lib/queryClient";
 import { Header } from "@/components/layout/header";
 import { getActiveSubdomain } from "@/lib/subdomain-utils";
 import { isDoctorLike } from "@/lib/role-utils";
+import { useAuth } from "@/hooks/use-auth";
 
 // Comprehensive country codes with ISO codes for flag API
 const COUNTRY_CODES = [
@@ -413,6 +414,7 @@ const userSchema = z.object({
     state: z.string().optional(),
     postcode: z.string().optional(),
     country: z.string().optional(),
+    building: z.string().optional(),
   }).optional(),
   emergencyContact: z.object({
     name: z.string().optional(),
@@ -436,13 +438,13 @@ const roleSchema = z.object({
   displayName: z.string().min(1, "Display name is required"),
   description: z.string().min(1, "Description is required"),
   permissions: z.object({
-    modules: z.record(z.object({
+    modules: z.record(z.string(), z.object({
       view: z.boolean(),
       create: z.boolean(),
       edit: z.boolean(),
       delete: z.boolean(),
     })).optional().default({}),
-    fields: z.record(z.object({
+    fields: z.record(z.string(), z.object({
       view: z.boolean(),
       edit: z.boolean(),
     })).optional().default({}),
@@ -453,6 +455,18 @@ type UserFormData = z.infer<typeof userSchema>;
 type RoleFormData = z.infer<typeof roleSchema>;
 
 // Permission templates for complete module and field initialization
+type ModulePermission = {
+  view: boolean;
+  create: boolean;
+  edit: boolean;
+  delete: boolean;
+};
+
+type FieldPermission = {
+  view: boolean;
+  edit: boolean;
+};
+
 const MODULE_KEYS = [
   'dashboard', 'patients', 'appointments', 'medicalRecords', 'prescriptions', 'billing', 
   'analytics', 'userManagement', 'shiftManagement', 'settings', 'aiInsights', 'messaging', 
@@ -466,17 +480,51 @@ const FIELD_KEYS = [
   'labResults', 'imagingResults', 'billingInformation', 'insuranceDetails'
 ] as const;
 
-const createEmptyModulePermission = () => ({
+const createEmptyModulePermission = (): ModulePermission => ({
   view: false,
   create: false,
   edit: false,
   delete: false,
 });
 
-const createEmptyFieldPermission = () => ({
+const createEmptyFieldPermission = (): FieldPermission => ({
   view: false,
   edit: false,
 });
+
+const getDefaultModulePermissions = (): Record<string, ModulePermission> =>
+  MODULE_KEYS.reduce<Record<string, ModulePermission>>((acc, moduleKey) => {
+    acc[moduleKey] = { ...createEmptyModulePermission() };
+    return acc;
+  }, {});
+
+const getDefaultFieldPermissions = (): Record<string, FieldPermission> =>
+  FIELD_KEYS.reduce<Record<string, FieldPermission>>((acc, fieldKey) => {
+    acc[fieldKey] = { ...createEmptyFieldPermission() };
+    return acc;
+  }, {});
+
+const normalizeModulePermissions = (input?: Record<string, any>): Record<string, ModulePermission> =>
+  MODULE_KEYS.reduce<Record<string, ModulePermission>>((acc, moduleKey) => {
+    const value = input?.[moduleKey];
+    acc[moduleKey] = {
+      view: Boolean(value?.view),
+      create: Boolean(value?.create),
+      edit: Boolean(value?.edit),
+      delete: Boolean(value?.delete),
+    };
+    return acc;
+  }, {});
+
+const normalizeFieldPermissions = (input?: Record<string, any>): Record<string, FieldPermission> =>
+  FIELD_KEYS.reduce<Record<string, FieldPermission>>((acc, fieldKey) => {
+    const value = input?.[fieldKey];
+    acc[fieldKey] = {
+      view: Boolean(value?.view),
+      edit: Boolean(value?.edit),
+    };
+    return acc;
+  }, {});
 
 interface User {
   id: number;
@@ -933,9 +981,15 @@ function SearchableSelect({
 
 export default function UserManagement() {
   const [, setLocation] = useLocation();
+  const { user } = useAuth();
+  const canManageRoles = user?.role === "admin";
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const [successTitle, setSuccessTitle] = useState("");
+  const getInitialPermissions = () => ({
+    modules: getDefaultModulePermissions(),
+    fields: getDefaultFieldPermissions(),
+  });
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<User | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
@@ -951,6 +1005,7 @@ export default function UserManagement() {
   const [physiotherapistSubcategoryOpen, setPhysiotherapistSubcategoryOpen] = useState(false);
   const [aestheticianSubcategoryOpen, setAestheticianSubcategoryOpen] = useState(false);
   const [selectedRole, setSelectedRole] = useState<string>("doctor");
+  const isPatientRole = selectedRole.toLowerCase() === "patient";
 
   // Fetch roles from the roles table filtered by organization_id
   const { data: rolesData = [] } = useQuery({
@@ -1041,6 +1096,19 @@ export default function UserManagement() {
   const [selectedPlanType, setSelectedPlanType] = useState<string>("");
   const [planTypeOpen, setPlanTypeOpen] = useState(false);
   
+  const [postcodeLookupMessage, setPostcodeLookupMessage] = useState("");
+  const [lookupAddresses, setLookupAddresses] = useState<string[]>([]);
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [selectedAddressDetails, setSelectedAddressDetails] = useState<{
+    street: string;
+    city: string;
+    postcode: string;
+    building: string;
+    district?: string;
+    county?: string;
+    country?: string;
+  } | null>(null);
+
   // Phone country code states
   const [selectedPhoneCountryCode, setSelectedPhoneCountryCode] = useState("+44");
   const [selectedEmergencyPhoneCountryCode, setSelectedEmergencyPhoneCountryCode] = useState("+44");
@@ -1419,6 +1487,7 @@ export default function UserManagement() {
         street: "",
         city: "",
         state: "",
+        building: "",
         postcode: "",
         country: "United Kingdom",
       },
@@ -1438,42 +1507,146 @@ export default function UserManagement() {
     },
   });
 
+  const currentCountry = form.watch("address.country");
+  const currentPostcodeValue = form.watch("address.postcode");
+
+  useEffect(() => {
+    if (!isPatientRole) {
+      setPostcodeLookupMessage("");
+      setLookupAddresses([]);
+      setSelectedAddressDetails(null);
+    }
+  }, [isPatientRole]);
+
+  useEffect(() => {
+    if (currentCountry !== "United Kingdom") {
+      setPostcodeLookupMessage("");
+      setLookupAddresses([]);
+      setSelectedAddressDetails(null);
+    }
+  }, [currentCountry]);
+
+  const applySelectedAddress = async (selection: string) => {
+    const cleanedPostcode = selection.split(",").pop()?.trim() || form.getValues("address.postcode") || "";
+    setLookupLoading(true);
+    try {
+      const response = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(cleanedPostcode)}`);
+      if (!response.ok) {
+        throw new Error("Unable to fetch address details");
+      }
+      const data = await response.json();
+      if (!data.result) throw new Error("Royal Mail returned no results");
+      const result = data.result;
+      const streetParts = [
+        result.line_1,
+        result.line_2,
+        result.thoroughfare,
+        result.dependent_locality,
+      ]
+        .filter(Boolean)
+        .map((part: string) => part.trim())
+        .filter(Boolean);
+      const streetAddress = streetParts.length ? streetParts.join(", ") : selection;
+
+      form.setValue("address.street", streetAddress);
+      form.setValue("address.city", result.post_town || result.admin_district || result.region || "");
+      form.setValue("address.state", result.region || result.admin_county || result.admin_district || "");
+      form.setValue("address.postcode", result.postcode || cleanedPostcode || "");
+      form.setValue("address.country", "United Kingdom");
+      form.setValue(
+        "address.building",
+        result.premise || result.building_name || result.admin_ward || result.line_1 || ""
+      );
+
+      setSelectedAddressDetails({
+        street: streetAddress,
+        city: result.post_town || result.admin_district || result.region || "",
+        postcode: result.postcode || cleanedPostcode || "",
+        building: result.premise || result.building_name || result.admin_ward || result.line_1 || "",
+        district: result.admin_district || result.admin_ward || result.region,
+        county: result.admin_county || result.region,
+        country: result.country || "United Kingdom",
+      });
+      setPostcodeLookupMessage("Royal Mail address populated.");
+      setLookupAddresses([]);
+    } catch (error) {
+      console.error("Royal Mail detail error:", error);
+      setPostcodeLookupMessage("Could not retrieve the full address. Please enter it manually.");
+      setSelectedAddressDetails(null);
+    } finally {
+      setLookupLoading(false);
+    }
+  };
+
+  const handlePostcodeLookup = async (postcode?: string) => {
+    if (!isPatientRole) {
+      setPostcodeLookupMessage("Royal Mail lookup is only available for patient records.");
+      return;
+    }
+
+    const candidatePostcode = (postcode ?? form.getValues("address.postcode") ?? "").trim();
+    if (!candidatePostcode || candidatePostcode.length < 3) {
+      setPostcodeLookupMessage("Enter a valid postcode before lookup.");
+      return;
+    }
+
+    const selectedCountry = form.getValues("address.country");
+    if (selectedCountry !== "United Kingdom") {
+      setPostcodeLookupMessage("Royal Mail lookup is only available for United Kingdom addresses.");
+      return;
+    }
+
+    setLookupLoading(true);
+    setPostcodeLookupMessage("Looking up addresses via Royal Mail...");
+    setLookupAddresses([]);
+    setSelectedAddressDetails(null);
+
+    try {
+      const cleanedPostcode = candidatePostcode.replace(/\s+/g, "");
+      const response = await fetch(`https://api.postcodes.io/postcodes/${cleanedPostcode}/autocomplete`);
+      if (!response.ok) {
+        throw new Error("No addresses found");
+      }
+
+      const data = await response.json();
+      const results: string[] = data.result ?? [];
+      if (results.length === 0) {
+        throw new Error("No addresses returned");
+      }
+
+      setLookupAddresses(results);
+      setPostcodeLookupMessage(`${results.length} address${results.length === 1 ? "" : "es"} returned. Select the precise Royal Mail address.`);
+      if (results.length === 1) {
+        await applySelectedAddress(results[0]);
+      }
+    } catch (error) {
+      console.error("Lookup error:", error);
+      setPostcodeLookupMessage("Unable to fetch addresses. Please enter the address manually or try again.");
+    } finally {
+      setLookupLoading(false);
+    }
+  };
+
   const roleForm = useForm<RoleFormData>({
-    resolver: zodResolver(roleSchema),
+    resolver: zodResolver(roleSchema) as Resolver<RoleFormData>,
     defaultValues: {
       name: "",
       displayName: "",
       description: "",
-      permissions: {
-        modules: {
-          patients: { view: false, create: false, edit: false, delete: false },
-          appointments: { view: false, create: false, edit: false, delete: false },
-          medicalRecords: { view: false, create: false, edit: false, delete: false },
-          prescriptions: { view: false, create: false, edit: false, delete: false },
-          billing: { view: false, create: false, edit: false, delete: false },
-          analytics: { view: false, create: false, edit: false, delete: false },
-          userManagement: { view: false, create: false, edit: false, delete: false },
-          settings: { view: false, create: false, edit: false, delete: false },
-          aiInsights: { view: false, create: false, edit: false, delete: false },
-          messaging: { view: false, create: false, edit: false, delete: false },
-          telemedicine: { view: false, create: false, edit: false, delete: false },
-          labResults: { view: false, create: false, edit: false, delete: false },
-          medicalImaging: { view: false, create: false, edit: false, delete: false },
-          forms: { view: false, create: false, edit: false, delete: false },
-        },
-        fields: {
-          patientSensitiveInfo: { view: false, edit: false },
-          financialData: { view: false, edit: false },
-          medicalHistory: { view: false, edit: false },
-          prescriptionDetails: { view: false, edit: false },
-          labResults: { view: false, edit: false },
-          imagingResults: { view: false, edit: false },
-          billingInformation: { view: false, edit: false },
-          insuranceDetails: { view: false, edit: false },
-        },
-      },
+      permissions: getInitialPermissions(),
     },
   });
+
+  const openRoleModalForCreate = () => {
+    setEditingRole(null);
+    roleForm.reset({
+      name: "",
+      displayName: "",
+      description: "",
+      permissions: getInitialPermissions(),
+    });
+    setIsRoleModalOpen(true);
+  };
 
   // Fetch roles with explicit authentication
   const { data: roles = [], isLoading: rolesLoading, error: rolesError } = useQuery({
@@ -1505,7 +1678,12 @@ export default function UserManagement() {
       queryClient.refetchQueries({ queryKey: ["/api/roles"] });
       setIsRoleModalOpen(false);
       setEditingRole(null);
-      roleForm.reset();
+      roleForm.reset({
+        name: "",
+        displayName: "",
+        description: "",
+        permissions: getInitialPermissions(),
+      });
       setSuccessTitle(`Role ${newRole.displayName} created successfully`);
       setSuccessMessage("");
       setShowSuccessModal(true);
@@ -1513,7 +1691,7 @@ export default function UserManagement() {
     onError: (error: any) => {
       toast({
         title: "Error",
-        description: error.message || "Failed to create role",
+        description: error.message || "Failed to create role1",
         variant: "destructive",
       });
     },
@@ -1535,7 +1713,12 @@ export default function UserManagement() {
       
       setIsRoleModalOpen(false);
       setEditingRole(null);
-      roleForm.reset();
+      roleForm.reset({
+        name: "",
+        displayName: "",
+        description: "",
+        permissions: getInitialPermissions(),
+      });
       
       setSuccessTitle(`Role ${updatedRole.displayName} updated successfully`);
       setSuccessMessage("");
@@ -1569,44 +1752,21 @@ export default function UserManagement() {
   });
 
   // Role submission handlers
-  const onRoleSubmit = (data: RoleFormData) => {
+  const onRoleSubmit: SubmitHandler<RoleFormData> = (data) => {
     // Check if role already exists (only for new roles, not edits)
-    if (!editingRole) {
-      // Prevent submission if there are validation errors
-      if (roleNameError || roleDisplayNameError) {
-        return;
-      }
+    if (!editingRole && (roleNameError || roleDisplayNameError)) {
+      return;
     }
-    
-    // Final normalization: ensure all permission values are proper booleans
-    const normalizedModules: Record<string, any> = {};
-    MODULE_KEYS.forEach((moduleKey) => {
-      const modulePerms = data.permissions?.modules?.[moduleKey] || {};
-      normalizedModules[moduleKey] = {
-        view: modulePerms.view === true,
-        create: modulePerms.create === true,
-        edit: modulePerms.edit === true,
-        delete: modulePerms.delete === true,
-      };
-    });
-    
-    const normalizedFields: Record<string, any> = {};
-    FIELD_KEYS.forEach((fieldKey) => {
-      const fieldPerms = data.permissions?.fields?.[fieldKey] || {};
-      normalizedFields[fieldKey] = {
-        view: fieldPerms.view === true,
-        edit: fieldPerms.edit === true,
-      };
-    });
-    
+
+    const currentPermissions = roleForm.getValues("permissions");
     const normalizedData = {
       ...data,
       permissions: {
-        modules: normalizedModules,
-        fields: normalizedFields,
+        modules: normalizeModulePermissions(currentPermissions.modules),
+        fields: normalizeFieldPermissions(currentPermissions.fields),
       },
     };
-    
+
     if (editingRole) {
       updateRoleMutation.mutate({ ...normalizedData, id: editingRole.id });
     } else {
@@ -1652,6 +1812,14 @@ export default function UserManagement() {
   };
 
   const handleDeleteRole = (roleId: number) => {
+    if (!canManageRoles) {
+      toast({
+        title: "Permission denied",
+        description: "Only admin users can delete roles.",
+        variant: "destructive",
+      });
+      return;
+    }
     deleteRoleMutation.mutate(roleId);
   };
 
@@ -2374,10 +2542,10 @@ export default function UserManagement() {
   }, {} as Record<string, number>);
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-full-width">
       <Header title="User Management" subtitle="Manage system users and their permissions" />
       
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="w-full px-4 sm:px-6 lg:px-8 py-8">
         {/* Summary Cards */}
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
           <Card>
@@ -3577,30 +3745,101 @@ export default function UserManagement() {
                         {/* Postcode - Step 2 */}
                         <div className="space-y-2">
                           <Label htmlFor="postcode">Postal Code / ZIP Code (Auto-lookup)</Label>
-                          <Input
-                            id="postcode"
-                            {...form.register("address.postcode")}
-                            placeholder="Enter postcode"
-                            data-testid="input-postcode"
-                            onChange={(e) => {
-                              const value = e.target.value;
-                              form.setValue("address.postcode", value);
-                              
-                              // Clear existing timeout
-                              if (detectionTimeout) {
-                                clearTimeout(detectionTimeout);
-                              }
-                              
-                              // Debounce: wait 500ms after user stops typing
-                              const timeout = setTimeout(() => {
-                                detectCountryFromPostcode(value);
-                              }, 500);
-                              
-                              setDetectionTimeout(timeout);
-                            }}
-                          />
+                          <div className="flex gap-2">
+                            <Input
+                              id="postcode"
+                              {...form.register("address.postcode")}
+                              placeholder="Enter postcode"
+                              data-testid="input-postcode"
+                              className="flex-1"
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                form.setValue("address.postcode", value);
+                                
+                                // Clear existing timeout
+                                if (detectionTimeout) {
+                                  clearTimeout(detectionTimeout);
+                                }
+                                
+                                // Debounce: wait 500ms after user stops typing
+                                const timeout = setTimeout(() => {
+                                  detectCountryFromPostcode(value);
+                                }, 500);
+                                
+                                setDetectionTimeout(timeout);
+                              }}
+                            />
+                            {isPatientRole && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="whitespace-nowrap"
+                                onClick={() => handlePostcodeLookup()}
+                                disabled={lookupLoading || !currentPostcodeValue?.trim()}
+                              >
+                                {lookupLoading ? "Looking up..." : "Lookup"}
+                              </Button>
+                            )}
+                          </div>
                           {isDetectingCountry && (
                             <p className="text-xs text-green-600 dark:text-green-400">🌍 Looking up city...</p>
+                          )}
+                          {isPatientRole && (
+                            <div className="space-y-2">
+                              {postcodeLookupMessage && (
+                                <p className="text-xs text-emerald-600 dark:text-emerald-300">
+                                  {postcodeLookupMessage}
+                                </p>
+                              )}
+                              {lookupAddresses.length > 0 && (
+                                <div className="space-y-2">
+                                  <p className="text-xs text-gray-500">Select the precise Royal Mail address:</p>
+                                  <div className="grid gap-2">
+                                    {lookupAddresses.map((address) => (
+                                      <Button
+                                        key={address}
+                                        variant="outline"
+                                        size="sm"
+                                        className="justify-start text-xs"
+                                        onClick={() => applySelectedAddress(address)}
+                                      >
+                                        {address}
+                                      </Button>
+                                    ))}
+                                  </div>
+                                </div>
+                              )}
+                              {selectedAddressDetails && (
+                                <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800 dark:border-emerald-700 dark:bg-emerald-950/20 dark:text-emerald-300">
+                                  <p className="font-semibold text-emerald-800 dark:text-emerald-300">
+                                    Royal Mail address
+                                  </p>
+                                  {selectedAddressDetails.street && (
+                                    <p>{selectedAddressDetails.street}</p>
+                                  )}
+                                  {selectedAddressDetails.city && (
+                                    <p>
+                                      <strong>City:</strong> {selectedAddressDetails.city}
+                                    </p>
+                                  )}
+                                  {selectedAddressDetails.county && (
+                                    <p>
+                                      <strong>County:</strong> {selectedAddressDetails.county}
+                                    </p>
+                                  )}
+                                  {selectedAddressDetails.country && (
+                                    <p>
+                                      <strong>Country:</strong> {selectedAddressDetails.country}
+                                    </p>
+                                  )}
+                                  {selectedAddressDetails.building && (
+                                    <p>
+                                      <strong>Building:</strong> {selectedAddressDetails.building}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                            </div>
                           )}
                         </div>
                         
@@ -3610,7 +3849,7 @@ export default function UserManagement() {
                           <Input
                             id="street"
                             {...form.register("address.street")}
-                            placeholder="Enter street address"
+                            placeholder="Enter address"
                             data-testid="input-street-address"
                           />
                         </div>
@@ -4431,13 +4670,18 @@ export default function UserManagement() {
                   if (!open) {
                     setIsRoleModalOpen(false);
                     setEditingRole(null);
-                    roleForm.reset();
+                    roleForm.reset({
+                      name: "",
+                      displayName: "",
+                      description: "",
+                      permissions: getInitialPermissions(),
+                    });
                     setRoleNameError("");
                     setRoleDisplayNameError("");
                   }
                 }}>
-                  <DialogTrigger asChild>
-                    <Button onClick={() => setIsRoleModalOpen(true)} className="flex items-center gap-2">
+                <DialogTrigger asChild>
+                  <Button onClick={openRoleModalForCreate} className="flex items-center gap-2">
                       <Plus className="h-4 w-4" />
                       Create New Role
                     </Button>
@@ -4583,7 +4827,7 @@ export default function UserManagement() {
                             { key: 'settings', name: 'Settings', description: 'Configure system settings' },
                             { key: 'subscription', name: 'Subscription', description: 'Manage subscription and packages' }
                           ].map((module) => {
-                            const currentPerms = roleForm.watch(`permissions.modules.${module.key}`) || {};
+                            const currentPerms = (roleForm.watch(`permissions.modules.${module.key}`) as ModulePermission | undefined) ?? createEmptyModulePermission();
                             
                             return (
                               <div key={module.key} className="grid grid-cols-5 gap-2 items-center py-2 border-b border-gray-100 dark:border-gray-700 last:border-b-0">
@@ -4663,7 +4907,7 @@ export default function UserManagement() {
                       >
                         {createRoleMutation.isPending || updateRoleMutation.isPending ? 
                           "Saving..." : 
-                          (editingRole ? "Update Role" : "Create Role")
+                          "Save Role"
                         }
                       </Button>
                     </DialogFooter>
@@ -4724,8 +4968,7 @@ export default function UserManagement() {
                               <Edit className="h-4 w-4" />
                             </Button>
                             
-                            {/* Delete button only for custom roles */}
-                            {role.isSystem === false && (
+                            {role.isSystem === false && canManageRoles && (
                               <AlertDialog>
                                 <AlertDialogTrigger asChild>
                                   <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700" data-testid={`button-delete-role-${role.id}`}>
@@ -4792,7 +5035,7 @@ export default function UserManagement() {
                               <Edit className="h-4 w-4" />
                             </Button>
                             
-                            {role.isSystem === false && (
+                            {role.isSystem === false && canManageRoles && (
                               <AlertDialog>
                                 <AlertDialogTrigger asChild>
                                   <Button variant="ghost" size="sm" className="text-red-600 hover:text-red-700" data-testid={`button-delete-role-grid-${role.id}`}>

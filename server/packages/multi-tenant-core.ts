@@ -50,11 +50,11 @@ export class MultiTenantCorePackage {
       return (req: any, res: any, next: any) => {
         // Skip SaaS routes entirely - they operate system-wide
         // Note: req.path is already stripped of /api prefix by app.use("/api", ...)
-        console.log(`[EXCLUDE-SAAS-CHECK] Path: ${req.path}, Original URL: ${req.originalUrl}`);
-        if (req.path.startsWith('/saas/')) {
-          console.log(`[EXCLUDE-SAAS] ✅ Skipping middleware for SaaS route: ${req.path}`);
-          return next();
-        }
+      console.log(`[EXCLUDE-SAAS-CHECK] Path: ${req.path}, Original URL: ${req.originalUrl}`);
+      if (req.path.startsWith('/saas/') || req.path.startsWith('/forms/share/')) {
+        console.log(`[EXCLUDE-SAAS] ✅ Skipping middleware for exempt route: ${req.path}`);
+        return next();
+      }
         console.log(`[EXCLUDE-SAAS] ❌ NOT skipping - executing middleware for: ${req.path}`);
         return middleware(req, res, next);
       };

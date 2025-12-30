@@ -45,10 +45,34 @@ interface ClinicFooterData {
   linkedin?: string | null;
 }
 
-export async function sendEmail(params: EmailParams): Promise<boolean> {
+export interface SendEmailResult {
+  success: boolean;
+  error?: string;
+}
+
+const formatSendGridError = (error: any): string => {
+  if (error?.response?.body?.errors) {
+    const errors = error.response.body.errors;
+    if (Array.isArray(errors) && errors.length > 0) {
+      return errors
+        .map(
+          (err: any) =>
+            err?.message ?? (err?.detail ? `${err.detail}` : "Unknown SendGrid error"),
+        )
+        .join(" | ");
+    }
+  }
+  if (error?.message) {
+    return error.message;
+  }
+  return "Unknown SendGrid error";
+};
+
+export async function sendEmailDetailed(params: EmailParams): Promise<SendEmailResult> {
   if (!process.env.SENDGRID_API_KEY) {
-    console.error('SendGrid email error: SENDGRID_API_KEY environment variable is not set');
-    return false;
+    const message = "SENDGRID_API_KEY environment variable is not set";
+    console.error('SendGrid email error:', message);
+    return { success: false, error: message };
   }
   
   try {
@@ -60,11 +84,17 @@ export async function sendEmail(params: EmailParams): Promise<boolean> {
       html: params.html,
       attachments: params.attachments,
     });
-    return true;
-  } catch (error) {
-    console.error('SendGrid email error:', error);
-    return false;
+    return { success: true };
+  } catch (error: any) {
+    const errorMessage = formatSendGridError(error);
+    console.error('SendGrid email error:', errorMessage, error);
+    return { success: false, error: errorMessage };
   }
+}
+
+export async function sendEmail(params: EmailParams): Promise<boolean> {
+  const result = await sendEmailDetailed(params);
+  return result.success;
 }
 
 export function generatePrescriptionEmailHTML(

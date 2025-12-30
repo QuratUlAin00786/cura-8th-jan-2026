@@ -391,7 +391,9 @@ export default function SaaSPackages() {
                         <Zap className="h-4 w-4" />
                         <span>API Calls</span>
                       </span>
-                      <span>{pkg.features.apiCallsPerMonth.toLocaleString()}/mo</span>
+                      <span>
+                        {(pkg.features?.apiCallsPerMonth ?? 0).toLocaleString()}/mo
+                      </span>
                     </div>
                   </div>
 

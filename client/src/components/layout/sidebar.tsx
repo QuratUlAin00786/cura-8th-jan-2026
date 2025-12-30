@@ -38,7 +38,7 @@ import {
 import { useTenant } from "@/hooks/use-tenant";
 import { getActiveSubdomain } from "@/lib/subdomain-utils";
 import { useAuth } from "@/hooks/use-auth";
-import { useRolePermissions } from "@/hooks/use-role-permissions";
+import { useRolePermissions, UserRole } from "@/hooks/use-role-permissions";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Avatar, AvatarContent, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -223,6 +223,31 @@ export function Sidebar() {
   // Items to hide from all users
   const hiddenItems = ["Automation"];
 
+  const roleSpecificHidden: Record<UserRole, string[]> = {
+    doctor: ["User Management", "Subscription/Packages", "Settings", "User Manual"],
+    nurse: ["User Management", "Subscription/Packages", "Settings", "User Manual"],
+    patient: ["Shift Management", "User Management", "Subscription/Packages", "Settings", "User Manual"],
+  };
+
+  const restrictedRoleModules = new Set([
+    "Dashboard",
+    "Patients",
+    "Appointments",
+    "Prescriptions",
+    "Lab Results",
+    "Imaging",
+    "Forms",
+    "Messaging",
+    "Analytics",
+    "Patient Portal",
+    "Clinical Decision Support",
+    "Symptom Checker",
+    "Telemedicine",
+    "Voice Documentation",
+    "Billing",
+    "Inventory",
+  ]);
+
   const filteredNavigation = ALL_NAVIGATION.filter((item) => {
     // Hide specific items from all users
     if (hiddenItems.includes(item.name)) {
@@ -236,6 +261,21 @@ export function Sidebar() {
       if (!canAccess(item.module)) return false;
     }
 
+    // Ensure certain modules honor DB permissions for doctor/nurse/patient roles even while loading
+    if (
+      (currentRole === "doctor" ||
+        currentRole === "nurse" ||
+        currentRole === "patient") &&
+      restrictedRoleModules.has(item.name)
+    ) {
+      if (isLoading) {
+        return false;
+      }
+      if (!canAccess(item.module)) {
+        return false;
+      }
+    }
+
     // Hide specific items from Patient role users
     if (currentRole === "patient" && patientHiddenItems.includes(item.name)) {
       return false;
@@ -246,10 +286,20 @@ export function Sidebar() {
       return false;
     }
 
+    // Role-specific navigation restrictions
+    if (currentRole && roleSpecificHidden[currentRole] && roleSpecificHidden[currentRole].includes(item.name)) {
+      return false;
+    }
+
     return true;
   });
 
   const filteredAdminNavigation = ADMIN_NAVIGATION.filter((item) => {
+    // Role-specific navigation restrictions
+    if (currentRole && roleSpecificHidden[currentRole] && roleSpecificHidden[currentRole].includes(item.name)) {
+      return false;
+    }
+
     // While permissions are loading, show items (will be filtered after load)
     if (!isLoading) {
       return canAccess(item.module);

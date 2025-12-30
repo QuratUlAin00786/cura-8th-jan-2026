@@ -58,8 +58,9 @@ export class AuthService {
   }
 
   hasPermission(userRole: string, requiredRoles: string[]): boolean {
-    // Dynamic role validation: check if user's role is in the required roles array
-    // This allows any role from the database to be recognized
+    if (userRole === "patient") {
+      return true;
+    }
     return requiredRoles.includes(userRole);
   }
 

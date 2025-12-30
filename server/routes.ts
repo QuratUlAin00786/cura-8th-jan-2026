@@ -19,13 +19,14 @@ import { messagingService } from "./messaging-service";
 import { isDoctorLike } from './utils/role-utils.js';
 // PayPal imports moved to dynamic imports to avoid initialization errors when credentials are missing
 import { gdprComplianceService } from "./services/gdpr-compliance";
-import { insertGdprConsentSchema, insertGdprDataRequestSchema, updateMedicalImageReportFieldSchema, insertAiInsightSchema, medicationsDatabase, patientDrugInteractions, insuranceVerifications, type Appointment, organizations, subscriptions, users, patients, symptomChecks, quickbooksConnections, insertClinicHeaderSchema, insertClinicFooterSchema, doctorsFee, invoices, labResults, insertMessageTemplateSchema, passwordResetTokens, saasSubscriptions, organizationIntegrations } from "../shared/schema";
+import { insertGdprConsentSchema, insertGdprDataRequestSchema, updateMedicalImageReportFieldSchema, medicationsDatabase, patientDrugInteractions, insuranceVerifications, type Appointment, organizations, subscriptions, users, patients, symptomChecks, quickbooksConnections, insertClinicHeaderSchema, insertClinicFooterSchema, doctorsFee, invoices, labResults, insertMessageTemplateSchema, passwordResetTokens, saasSubscriptions, organizationIntegrations } from "../shared/schema";
 import * as schema from "../shared/schema";
 import { db, pool } from "./db";
 import { and, eq, sql, desc, isNull, isNotNull, or, gte, lte, ne } from "drizzle-orm";
 import { processAppointmentBookingChat, generateAppointmentSummary } from "./anthropic";
 import { inventoryService } from "./services/inventory";
 import { pharmacyService } from "./services/pharmacy";
+import { formService } from "./services/forms";
 import { emailService } from "./services/email";
 import { sendEmail, generatePrescriptionEmailHTML } from "./email";
 import multer from "multer";
@@ -995,6 +996,53 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  const formShareRouter = express.Router();
+
+  formShareRouter.get("/forms/share/:token/meta", async (req: TenantRequest, res) => {
+    try {
+      const meta = await formService.getShareMetadata(req.params.token);
+      res.json(meta);
+    } catch (error) {
+      console.error("Error fetching share metadata:", error);
+      res.status(400).json({ error: (error as Error).message || "Invalid or expired link" });
+    }
+  });
+
+  formShareRouter.get("/forms/share/:token", async (req: TenantRequest, res) => {
+    try {
+      const payload = await formService.getShareByToken(req.params.token);
+      res.json({
+        share: {
+          id: payload.share.id,
+          formId: payload.share.formId,
+          status: payload.share.status,
+          expiresAt: payload.share.expiresAt,
+        },
+        form: payload.form,
+      });
+    } catch (error) {
+      console.error("Invalid form share link:", error);
+      res.status(400).json({ error: (error as Error).message || "Invalid or expired link" });
+    }
+  });
+
+  formShareRouter.post("/forms/share/:token/responses", async (req: TenantRequest, res) => {
+    try {
+      const answers = Array.isArray(req.body.answers) ? req.body.answers : [];
+      if (!answers.length) {
+        return res.status(400).json({ error: "answers array is required" });
+      }
+
+      const response = await formService.submitResponse(req.params.token, answers);
+      res.status(201).json(response);
+    } catch (error) {
+      console.error("Error saving form response:", error);
+      res.status(400).json({ error: (error as Error).message || "Failed to submit form" });
+    }
+  });
+
+  app.use("/api", formShareRouter);
+
   // Initialize Multi-Tenant Core Package
   const multiTenantPackage = initializeMultiTenantPackage(storage as any, {
     enforceStrictTenantIsolation: true,
@@ -1624,8 +1672,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Organization settings endpoint (requires authentication)
-  app.patch("/api/organization/settings", authMiddleware, requireRole(["admin"]), async (req: TenantRequest, res) => {
+  app.patch("/api/organization/settings", authMiddleware, requireRole(["admin", "doctor", "nurse"]), async (req: TenantRequest, res) => {
     try {
+      const normalizedRequestBody = {
+        ...req.body,
+        permissions: normalizedPermissions,
+      };
+      console.log("Normalized permissions payload:", JSON.stringify(normalizedPermissions, null, 2));
       const updateData = z.object({
         name: z.string().optional(),
         brandName: z.string().optional(),
@@ -2331,7 +2384,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         color: mutedText
       });
       
-      const pdfBytes = await pdfDoc.save();
+      let pdfBytes = await pdfDoc.save();
       
       res.setHeader('Content-Type', 'application/pdf');
       res.setHeader('Content-Disposition', `attachment; filename="${payment.invoiceNumber}.pdf"`);
@@ -2638,7 +2691,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
   });
 
   // Patient routes
-  app.get("/api/patients", async (req: TenantRequest, res) => {
+  app.get("/api/patients", authMiddleware, requireRole(["admin", "doctor", "nurse", "patient"]), async (req: TenantRequest, res) => {
     try {
       const limit = parseInt(req.query.limit as string) || 50;
       const isActiveParam = req.query.isActive as string;
@@ -4006,7 +4059,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
   });
 
   // Appointments routes - Enhanced with role-based access control
-  app.get("/api/appointments", authMiddleware, async (req: TenantRequest, res) => {
+  app.get("/api/appointments", authMiddleware, requireRole(["admin", "doctor", "nurse", "patient"]), async (req: TenantRequest, res) => {
     try {
       const { start, end, doctorId, patientId, providerId, date } = req.query;
       const userRole = req.user!.role;
@@ -4344,6 +4397,13 @@ This treatment plan should be reviewed and adjusted based on individual patient 
       console.log("Appointment creation request received:", req.body);
       console.log("Tenant ID:", req.tenant?.id);
       
+      const normalizedBody = {
+        ...req.body,
+        appointmentType: req.body.appointmentType ?? req.body.appointment_type,
+        treatmentId: req.body.treatmentId ?? req.body.treatment_id ?? null,
+        consultationId: req.body.consultationId ?? req.body.consultation_id ?? null,
+      };
+
       const appointmentData = z.object({
         patientId: z.any().transform((val) => {
           // Handle null, undefined, empty string, or NaN
@@ -4360,13 +4420,16 @@ This treatment plan should be reviewed and adjusted based on individual patient 
         scheduledAt: z.string().optional(),
         duration: z.number().default(30),
         type: z.enum(["consultation", "follow_up", "procedure"]).default("consultation"),
+        appointmentType: z.enum(["consultation", "treatment"]).default("consultation"),
+        treatmentId: z.number().int().optional().nullable(),
+        consultationId: z.number().int().optional().nullable(),
         location: z.string().optional(),
         department: z.string().optional(),
         notes: z.string().optional(),
         status: z.string().optional(),
         isVirtual: z.boolean().default(false),
         createdBy: z.number().optional()
-      }).parse(req.body);
+      }).parse(normalizedBody);
 
       console.log("Parsed appointment data:", appointmentData);
 
@@ -4424,6 +4487,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
       // Generate unique appointment ID
       const appointmentId = `APT${Date.now()}P${numericPatientId}AUTO`;
 
+      const appointmentTypeValue = appointmentData.appointmentType || "consultation";
       const appointmentToCreate = {
         patientId: numericPatientId,
         providerId: appointmentData.providerId,
@@ -4438,7 +4502,10 @@ This treatment plan should be reviewed and adjusted based on individual patient 
         status: appointmentData.status || "scheduled", // Add missing status field
         location: appointmentData.location || "",
         isVirtual: appointmentData.isVirtual,
-        createdBy: appointmentData.createdBy || null
+        createdBy: appointmentData.createdBy || null,
+        appointmentType: appointmentTypeValue,
+        treatmentId: appointmentTypeValue === "treatment" ? appointmentData.treatmentId || null : null,
+        consultationId: appointmentTypeValue === "consultation" ? appointmentData.consultationId || null : null,
       };
 
       // Note: Removed past time validation since we're using naive timestamps
@@ -4652,7 +4719,10 @@ This treatment plan should be reviewed and adjusted based on individual patient 
         description: z.string().optional(),
         duration: z.number().optional(),
         location: z.string().optional(),
-        isVirtual: z.boolean().optional()
+        isVirtual: z.boolean().optional(),
+        appointmentType: z.enum(["consultation", "treatment"]).optional(),
+        treatmentId: z.number().int().optional().nullable(),
+        consultationId: z.number().int().optional().nullable()
       }).parse(req.body);
 
       console.log(`Updating appointment ${appointmentId} with data:`, updateData);
@@ -4889,7 +4959,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
   // ============================================
 
   // Get revenue data
-  app.get("/api/financial/revenue", authMiddleware, requireRole(["admin", "finance", "doctor"]), async (req: TenantRequest, res) => {
+  app.get("/api/financial/revenue", authMiddleware, requireRole(["admin", "finance", "doctor", "nurse", "patient"]), async (req: TenantRequest, res) => {
     try {
       const { dateRange } = req.query;
       
@@ -5642,7 +5712,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
 
   // User management routes (admin only)
   // Medical staff endpoint for appointment booking - accessible to authenticated users
-  app.get("/api/medical-staff", authMiddleware, async (req: TenantRequest, res) => {
+  app.get("/api/medical-staff", authMiddleware, requireRole(["admin", "doctor", "nurse", "patient"]), async (req: TenantRequest, res) => {
     try {
       console.log('🏥 MEDICAL STAFF API: Fetching doctors from users table');
       console.log('🏢 MEDICAL STAFF API: Organization ID from subdomain/tenant:', req.tenant!.id);
@@ -5954,7 +6024,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
     }
   });
 
-  app.get("/api/users", authMiddleware, async (req: TenantRequest, res) => {
+  app.get("/api/users", authMiddleware, requireRole(["admin", "doctor", "nurse"]), async (req: TenantRequest, res) => {
     try {
       const users = await storage.getUsersByOrganization(req.tenant!.id);
       
@@ -6830,7 +6900,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
   });
 
   // Get role permissions by role name
-  app.get("/api/roles/by-name/:roleName", authMiddleware, async (req: TenantRequest, res) => {
+  app.get("/api/roles/by-name/:roleName", authMiddleware, requireRole(["admin", "doctor", "nurse", "patient"]), async (req: TenantRequest, res) => {
     try {
       const { roleName } = req.params;
       const role = await storage.getRoleByName(roleName, req.tenant!.id);
@@ -6848,24 +6918,19 @@ This treatment plan should be reviewed and adjusted based on individual patient 
 
   app.post("/api/roles", requireRole(["admin"]), async (req: TenantRequest, res) => {
     try {
+      const permissionsPayload = preparePermissionsForValidation(req.body?.permissions);
+      const validatedPermissions = rolePermissionsUpdate.parse(permissionsPayload);
+
       const roleData = z.object({
         name: z.string().min(1).max(50),
         displayName: z.string().min(1),
         description: z.string().min(1),
-        permissions: z.object({
-          modules: z.record(z.object({
-            view: z.boolean(),
-            create: z.boolean(),
-            edit: z.boolean(),
-            delete: z.boolean(),
-          })),
-          fields: z.record(z.object({
-            view: z.boolean(),
-            edit: z.boolean(),
-          }))
-        }),
+        permissions: rolePermissionsUpdate,
         isSystem: z.boolean().optional().default(false)
-      }).parse(req.body);
+      }).parse({
+        ...req.body,
+        permissions: validatedPermissions,
+      });
 
       const role = await storage.createRole({
         ...roleData,
@@ -6874,40 +6939,153 @@ This treatment plan should be reviewed and adjusted based on individual patient 
 
       res.status(201).json(role);
     } catch (error) {
+      if (error instanceof z.ZodError) {
+        console.error("Permissions validation errors:", error.issues);
+        return res.status(400).json({
+          error: "Invalid permissions payload",
+          details: error.issues,
+        });
+      }
       console.error("Role creation error:", error);
       res.status(500).json({ error: "Failed to create role" });
     }
   });
 
-  app.patch("/api/roles/:id", requireRole(["admin"]), async (req: TenantRequest, res) => {
+  const MODULE_KEYS = [
+    "dashboard", "patients", "appointments", "medicalRecords", "prescriptions", "billing",
+    "analytics", "userManagement", "shiftManagement", "settings", "aiInsights", "messaging",
+    "telemedicine", "labResults", "medicalImaging", "forms", "integrations",
+    "automation", "patientPortal", "populationHealth", "voiceDocumentation",
+    "inventory", "gdprCompliance", "subscription"
+  ] as const;
+
+  const FIELD_KEYS = [
+    "patientSensitiveInfo", "financialData", "medicalHistory", "prescriptionDetails",
+    "labResults", "imagingResults", "billingInformation", "insuranceDetails"
+  ] as const;
+
+  const modulePermissionSchema = z.object({
+    view: z.boolean(),
+    create: z.boolean(),
+    edit: z.boolean(),
+    delete: z.boolean(),
+  }).passthrough();
+
+  const fieldPermissionSchema = z.object({
+    view: z.boolean(),
+    edit: z.boolean(),
+  }).passthrough();
+
+  const parseEntryValue = (value: any) => {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    if (typeof value === "string") {
+      try {
+        const parsed = JSON.parse(value);
+        if (typeof parsed === "object" && parsed !== null) {
+          return parsed;
+        }
+        return null;
+      } catch {
+        return null;
+      }
+    }
+    if (typeof value === "object") {
+      return value;
+    }
+    return null;
+  };
+
+  const normalizePermissionEntry = (entry: any, keys: readonly string[]) => {
+    const result: Record<string, any> = {};
+    keys.forEach((key) => {
+      const value = parseEntryValue(entry?.[key]);
+      if (value === null) {
+        result[key] = null;
+      } else {
+        result[key] = {
+          view: Boolean(value?.view),
+          create: Boolean(value?.create),
+          edit: Boolean(value?.edit),
+          delete: Boolean(value?.delete),
+        };
+      }
+    });
+    return result;
+  };
+
+  const normalizePermissionFields = (entry: any, keys: readonly string[]) => {
+    const result: Record<string, any> = {};
+    keys.forEach((key) => {
+      const value = parseEntryValue(entry?.[key]);
+      result[key] = {
+        view: Boolean(value?.view),
+        edit: Boolean(value?.edit),
+      };
+    });
+    return result;
+  };
+
+  const normalizePermissionsPayload = (payload: any) => {
+    console.log("Normalizing permissions payload:", payload);
+    return {
+      modules: normalizePermissionEntry(payload?.modules, MODULE_KEYS),
+      fields: normalizePermissionFields(payload?.fields, FIELD_KEYS),
+    };
+  };
+
+  const preparePermissionsForValidation = (payload: any) => normalizePermissionsPayload(payload);
+
+  const rolePermissionsUpdate = z.object({
+    modules: z.record(z.string(), z.union([modulePermissionSchema, z.null()])),
+    fields: z.record(z.string(), z.union([fieldPermissionSchema, z.null()])),
+  });
+
+  const roleUpdateBase = z.object({
+    name: z.string().optional(),
+    displayName: z.string().optional(),
+    description: z.string().optional(),
+  });
+
+  app.patch("/api/roles/:id", authMiddleware, requireRole(["admin"]), async (req: TenantRequest, res) => {
     try {
-      const roleId = parseInt(req.params.id);
-      const updateData = z.object({
-        name: z.string().optional(),
-        displayName: z.string().optional(),
-        description: z.string().optional(),
-        permissions: z.object({
-          modules: z.record(z.object({
-            view: z.boolean(),
-            create: z.boolean(),
-            edit: z.boolean(),
-            delete: z.boolean(),
-          })),
-          fields: z.record(z.object({
-            view: z.boolean(),
-            edit: z.boolean(),
-          }))
-        }).optional()
-      }).parse(req.body);
+      const roleId = Number(req.params.id);
+
+      console.log("Incoming permissions payload:", JSON.stringify(req.body?.permissions));
+      const permissionsPayload = preparePermissionsForValidation(req.body?.permissions);
+      console.log("Incoming permissions payload 2:", JSON.stringify(permissionsPayload));
+      
+      const validatedPermissions = rolePermissionsUpdate.parse(permissionsPayload);
+      console.log("Incoming permissions payload 3:", JSON.stringify(req.body?.permissions));
+
+      const updateData = roleUpdateBase.extend({
+        permissions: rolePermissionsUpdate.optional(),
+      }).parse({
+        name: req.body?.name,
+        displayName: req.body?.displayName,
+        description: req.body?.description,
+        permissions: validatedPermissions,
+      });
+
+      console.log("Normalized permissions payload:", validatedPermissions);
 
       const role = await storage.updateRole(roleId, req.tenant!.id, updateData);
-      
+
       if (!role) {
         return res.status(404).json({ error: "Role not found" });
       }
 
       res.json(role);
     } catch (error) {
+      if (error instanceof z.ZodError) {
+        console.error("Permissions validation errors:", error.issues);
+        return res.status(400).json({
+          error: "Invalid permissions payload",
+          details: error.issues,
+        });
+      }
+
       console.error("Role update error:", error);
       res.status(500).json({ error: "Failed to update role" });
     }
@@ -7125,12 +7303,20 @@ This treatment plan should be reviewed and adjusted based on individual patient 
   app.post("/api/ai-insights", requireRole(["doctor", "nurse", "admin"]), async (req: TenantRequest, res) => {
     try {
       // Create schema that excludes server-managed fields (organizationId)
-      const createInsightSchema = insertAiInsightSchema.omit({
-        organizationId: true
-      }).extend({
-        symptoms: z.string().optional(),
-        history: z.string().optional()
-      });
+      const createInsightSchema = z.object({
+        patientId: z.number().optional(),
+        type: z.enum(["risk_alert", "drug_interaction", "treatment_suggestion", "preventive_care"]),
+        title: z.string().min(1),
+        description: z.string().min(1),
+        severity: z.enum(["low", "medium", "high", "critical"]),
+        actionRequired: z.boolean(),
+        confidence: z.string().regex(/^(0(\.\d+)?|1(\.0+)?)$/, "Confidence must be between 0 and 1"),
+        symptoms: z.string().optional().nullable(),
+        history: z.string().optional().nullable(),
+        status: z.string().default("active"),
+        aiStatus: z.string().default("pending"),
+        metadata: z.record(z.any()).optional().default({}),
+      }).passthrough();
 
       const validatedData = createInsightSchema.parse(req.body);
       
@@ -7143,7 +7329,8 @@ This treatment plan should be reviewed and adjusted based on individual patient 
       }
 
       // Prepare metadata with symptoms and history
-      const { symptoms, history, ...insightData } = validatedData;
+      const { symptoms, history, ...insightDataRaw } = validatedData;
+      const { id, ...insightData } = insightDataRaw;
       
       // Generate suggested actions based on insight type and severity
       const generateSuggestedActions = (type: string, severity: string, actionRequired: boolean) => {
@@ -7230,7 +7417,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
       const relatedConditions = generateRelatedConditions(insightData.type || '', insightData.title || '', insightData.description || '');
       
       const metadata = {
-        ...insightData.metadata,
+        ...(insightData.metadata || {}),
         ...(symptoms && { symptoms }),
         ...(history && { history }),
         suggestedActions,
@@ -7245,7 +7432,12 @@ This treatment plan should be reviewed and adjusted based on individual patient 
         metadata
       };
 
-      const newInsight = await storage.createAiInsight(insightToCreate);
+      const { id: _, ...insertableInsight } = {
+        ...insightToCreate,
+        userId: req.user?.id,
+        createdAt: new Date(),
+      };
+      const newInsight = await storage.createAiInsight(insertableInsight as any);
       
       // Transform confidence back to number for frontend response
       const transformedInsight = {
@@ -7255,6 +7447,8 @@ This treatment plan should be reviewed and adjusted based on individual patient 
 
       res.status(201).json(transformedInsight);
     } catch (error) {
+      console.error("[AI-INSIGHTS] create request body:", req.body);
+      console.error("[AI-INSIGHTS] create error stack:", error);
       handleRouteError(error, "create AI insight", res);
     }
   });
@@ -8059,7 +8253,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
   });
 
   // Organization settings routes
-  app.get("/api/organization/settings", requireRole(["admin"]), async (req: TenantRequest, res) => {
+  app.get("/api/organization/settings", requireRole(["admin", "doctor", "nurse"]), async (req: TenantRequest, res) => {
     try {
       const organization = await storage.getOrganization(req.tenant!.id);
       if (!organization) {
@@ -10582,37 +10776,9 @@ This treatment plan should be reviewed and adjusted based on individual patient 
   // Forms Routes
   app.get("/api/forms", authMiddleware, async (req: TenantRequest, res) => {
     try {
-      if (!req.user) {
-        return res.status(401).json({ error: "User not authenticated" });
-      }
-
-      const forms = [
-        {
-          id: "form_001",
-          title: "Patient Intake Form",
-          description: "Comprehensive new patient registration",
-          category: "intake",
-          status: "published",
-          fields: [
-            {
-              id: "1",
-              type: "text",
-              label: "Full Name",
-              required: true
-            },
-            {
-              id: "2",
-              type: "email",
-              label: "Email Address",
-              required: true
-            }
-          ],
-          createdAt: new Date().toISOString(),
-          responses: 45
-        }
-      ];
-
-      res.json(forms);
+      const organizationId = requireOrgId(req);
+      const data = await formService.getForms(organizationId);
+      res.json(data);
     } catch (error) {
       console.error("Error fetching forms:", error);
       res.status(500).json({ error: "Failed to fetch forms" });
@@ -10625,23 +10791,180 @@ This treatment plan should be reviewed and adjusted based on individual patient 
         return res.status(401).json({ error: "User not authenticated" });
       }
 
-      const formData = req.body;
-      
-      const newForm = {
-        id: `form_${Date.now()}`,
-        ...formData,
+      const organizationId = requireOrgId(req);
+      const payload = {
+        organizationId,
         createdBy: req.user.id,
-        createdAt: new Date().toISOString(),
-        status: "draft",
-        responses: 0
+        title: req.body.title,
+        description: req.body.description,
+        metadata: req.body.metadata,
+        status: req.body.status,
+        sections: req.body.sections,
       };
 
-      res.status(201).json(newForm);
+      const created = await formService.createForm(payload);
+      res.status(201).json(created);
     } catch (error) {
       console.error("Error creating form:", error);
-      res.status(500).json({ error: "Failed to create form" });
+      let message = "Failed to create form";
+      if (error instanceof Error && error.message) {
+        message = error.message;
+      }
+      res.status(500).json({ error: message });
     }
   });
+
+  app.post(
+    "/api/forms/:formId/share",
+    authMiddleware,
+    requireRole(["admin", "doctor"]),
+    async (req: TenantRequest, res) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({ error: "User not authenticated" });
+        }
+
+        const organizationId = requireOrgId(req);
+        const formId = Number(req.params.formId);
+        const patientId = Number(req.body.patientId);
+        if (!patientId) {
+          return res.status(400).json({ error: "patientId is required" });
+        }
+
+        const result = await formService.shareForm({
+          formId,
+          organizationId,
+          patientId,
+          sentById: req.user.id,
+        });
+        res.status(201).json(result);
+      } catch (error) {
+        console.error("Error sharing form:", error);
+        res.status(500).json({ error: (error as Error).message || "Failed to share form" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/forms/:formId/shares",
+    authMiddleware,
+    requireRole(["admin", "doctor"]),
+    async (req: TenantRequest, res) => {
+      try {
+        const organizationId = requireOrgId(req);
+        const formId = Number(req.params.formId);
+        if (!formId) {
+          return res.status(400).json({ error: "formId is required" });
+        }
+        const logs = await formService.getFormShareLogs(formId, organizationId);
+        res.json(logs);
+      } catch (error) {
+        console.error("Error fetching share logs:", error);
+        res.status(500).json({ error: (error as Error).message || "Failed to fetch share logs" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/forms/:formId/responses",
+    authMiddleware,
+    requireRole(["admin", "doctor", "nurse"]),
+    async (req: TenantRequest, res) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({ error: "User not authenticated" });
+        }
+
+        const organizationId = requireOrgId(req);
+        const formId = Number(req.params.formId);
+        if (!formId) {
+          return res.status(400).json({ error: "formId is required" });
+        }
+
+        const payload = await formService.getFormResponses(formId, organizationId);
+        res.json(payload);
+      } catch (error) {
+        console.error("Error fetching form responses:", error);
+        res.status(500).json({ error: (error as Error).message || "Failed to fetch responses" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/forms/share-logs/:logId/resend",
+    authMiddleware,
+    requireRole(["admin", "doctor"]),
+    async (req: TenantRequest, res) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({ error: "User not authenticated" });
+        }
+
+        const organizationId = requireOrgId(req);
+        const logId = Number(req.params.logId);
+        if (!logId) {
+          return res.status(400).json({ error: "logId is required" });
+        }
+
+        const result = await formService.resendShareEmail(logId, organizationId, req.user.id);
+        res.json(result);
+      } catch (error) {
+        console.error("Error resending share email:", error);
+        res.status(500).json({ error: (error as Error).message || "Failed to resend share email" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/forms/:formId/share/preview",
+    authMiddleware,
+    requireRole(["admin", "doctor"]),
+    async (req: TenantRequest, res) => {
+      try {
+        if (!req.user) {
+          return res.status(401).json({ error: "User not authenticated" });
+        }
+
+        const organizationId = requireOrgId(req);
+        const formId = Number(req.params.formId);
+        const patientId = Number(req.body.patientId);
+        if (!patientId) {
+          return res.status(400).json({ error: "patientId is required" });
+        }
+
+        const preview = await formService.previewShareEmail({
+          formId,
+          organizationId,
+          patientId,
+          sentById: req.user.id,
+        });
+        res.json(preview);
+      } catch (error) {
+        console.error("Error generating share preview:", error);
+        res.status(500).json({ error: (error as Error).message || "Failed to preview share email" });
+      }
+    },
+  );
+
+  app.delete(
+    "/api/forms/:formId",
+    authMiddleware,
+    requireRole(["admin", "doctor"]),
+    async (req: TenantRequest, res) => {
+      try {
+        const organizationId = requireOrgId(req);
+        const formId = Number(req.params.formId);
+        if (!formId) {
+          return res.status(400).json({ error: "formId is required" });
+        }
+        await formService.deleteForm(formId, organizationId);
+        res.status(204).send();
+      } catch (error) {
+        console.error("Error deleting form:", error);
+        res.status(500).json({ error: (error as Error).message || "Failed to delete form" });
+      }
+    },
+  );
 
   // Analytics endpoints
   app.get("/api/analytics", authMiddleware, async (req: TenantRequest, res) => {
@@ -12432,8 +12755,10 @@ This treatment plan should be reviewed and adjusted based on individual patient 
       const userId = req.user!.id;
       const organizationId = req.tenant!.id;
       const limit = parseInt(req.query.limit as string) || 20;
-
-      const notifications = await storage.getNotifications(userId, organizationId, limit);
+      const isAdminUser = req.user!.role === "admin";
+      const notifications = isAdminUser
+        ? await storage.getNotificationsByOrganization(organizationId, limit)
+        : await storage.getNotifications(userId, organizationId, limit);
       res.json(notifications);
     } catch (error) {
       console.error("Error fetching notifications:", error);
@@ -12446,7 +12771,10 @@ This treatment plan should be reviewed and adjusted based on individual patient 
       const userId = req.user!.id;
       const organizationId = req.tenant!.id;
 
-      const count = await storage.getUnreadNotificationCount(userId, organizationId);
+      const isAdminUser = req.user!.role === "admin";
+      const count = isAdminUser
+        ? await storage.getUnreadNotificationCountByOrganization(organizationId)
+        : await storage.getUnreadNotificationCount(userId, organizationId);
       res.json({ count });
     } catch (error) {
       console.error("Error fetching unread count:", error);
@@ -12519,8 +12847,12 @@ This treatment plan should be reviewed and adjusted based on individual patient 
       const notificationId = parseInt(req.params.id);
       const userId = req.user!.id;
       const organizationId = req.tenant!.id;
+      const isAdminUser = req.user!.role === "admin";
 
-      const notification = await storage.markNotificationAsDismissed(notificationId, userId, organizationId);
+      const notification = isAdminUser
+        ? await storage.markNotificationAsDismissedByOrganization(notificationId, organizationId)
+        : await storage.markNotificationAsDismissed(notificationId, userId, organizationId);
+
       if (!notification) {
         return res.status(404).json({ error: "Notification not found" });
       }
@@ -16823,7 +17155,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
   });
 
   // Financial Forecasting endpoints
-  app.get("/api/financial-forecasting", authMiddleware, requireRole(["admin", "doctor"]), async (req: TenantRequest, res) => {
+  app.get("/api/financial-forecasting", authMiddleware, requireRole(["admin", "doctor","nurse","patient"]), async (req: TenantRequest, res) => {
     try {
       const forecasts = await storage.getFinancialForecasts(req.tenant!.id);
       res.json(forecasts);
@@ -16833,7 +17165,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
     }
   });
 
-  app.get("/api/financial-forecasting/:id", authMiddleware, requireRole(["admin", "doctor"]), async (req: TenantRequest, res) => {
+  app.get("/api/financial-forecasting/:id", authMiddleware, requireRole(["admin", "doctor","nurse","patient"]), async (req: TenantRequest, res) => {
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) {
@@ -16852,7 +17184,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
     }
   });
 
-  app.post("/api/financial-forecasting/generate", authMiddleware, requireRole(["admin", "doctor"]), async (req: TenantRequest, res) => {
+  app.post("/api/financial-forecasting/generate", authMiddleware, requireRole(["admin", "doctor","nurse","patient"]), async (req: TenantRequest, res) => {
     try {
       const forecasts = await storage.generateFinancialForecasts(req.tenant!.id);
       res.json(forecasts);
@@ -16862,7 +17194,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
     }
   });
 
-  app.put("/api/financial-forecasting/:id", authMiddleware, requireRole(["admin", "doctor"]), async (req: TenantRequest, res) => {
+  app.put("/api/financial-forecasting/:id", authMiddleware, requireRole(["admin", "doctor","nurse","patient"]), async (req: TenantRequest, res) => {
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) {
@@ -16906,7 +17238,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
     }
   });
 
-  app.delete("/api/financial-forecasting/:id", authMiddleware, requireRole(["admin", "doctor"]), async (req: TenantRequest, res) => {
+  app.delete("/api/financial-forecasting/:id", authMiddleware, requireRole(["admin", "doctor","nurse","patient"]), async (req: TenantRequest, res) => {
     try {
       const id = parseInt(req.params.id);
       if (isNaN(id)) {
@@ -18876,7 +19208,24 @@ This treatment plan should be reviewed and adjusted based on individual patient 
     }
   });
 
-  app.post("/api/inventory/purchase-orders", authMiddleware, requireRole(["admin", "doctor"]), async (req: TenantRequest, res) => {
+  app.get("/api/inventory/purchase-orders/:id", authMiddleware, requireRole(["admin", "doctor", "nurse", "receptionist"]), async (req: TenantRequest, res) => {
+    try {
+      const purchaseOrderId = parseInt(req.params.id);
+      if (isNaN(purchaseOrderId)) {
+        return res.status(400).json({ error: "Invalid purchase order ID" });
+      }
+      const purchaseOrder = await inventoryService.getPurchaseOrderById(purchaseOrderId, req.tenant!.id);
+      if (!purchaseOrder) {
+        return res.status(404).json({ error: "Purchase order not found" });
+      }
+      res.json(purchaseOrder);
+    } catch (error) {
+      console.error("Error fetching purchase order detail:", error);
+      res.status(500).json({ error: "Failed to fetch purchase order detail" });
+    }
+  });
+
+  app.post("/api/inventory/purchase-orders", authMiddleware, requireRole(["admin", "doctor", "nurse"]), async (req: TenantRequest, res) => {
     try {
       const orderData = z.object({
         supplierId: z.number(),
@@ -18912,7 +19261,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
   });
 
   // Send Purchase Order Email to Halo Pharmacy
-  app.post("/api/inventory/purchase-orders/:id/send-email", authMiddleware, requireRole(["admin", "doctor"]), async (req: TenantRequest, res) => {
+  app.post("/api/inventory/purchase-orders/:id/send-email", authMiddleware, requireRole(["admin", "doctor", "nurse"]), async (req: TenantRequest, res) => {
     try {
       const purchaseOrderId = parseInt(req.params.id);
       
@@ -18929,7 +19278,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
   });
 
   // Delete Purchase Order
-  app.delete("/api/inventory/purchase-orders/:id", authMiddleware, requireRole(["admin", "doctor"]), async (req: TenantRequest, res) => {
+  app.delete("/api/inventory/purchase-orders/:id", authMiddleware, requireRole(["admin", "doctor", "nurse"]), async (req: TenantRequest, res) => {
     try {
       const purchaseOrderId = parseInt(req.params.id);
       
@@ -18962,7 +19311,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
   });
 
   // Inventory Reports
-  app.get("/api/inventory/reports/value", authMiddleware, requireRole(["admin", "doctor"]), async (req: TenantRequest, res) => {
+  app.get("/api/inventory/reports/value", authMiddleware, requireRole(["admin", "doctor", "nurse"]), async (req: TenantRequest, res) => {
     try {
       const inventoryValue = await inventoryService.getInventoryValue(req.tenant!.id);
       res.json(inventoryValue);
@@ -19003,6 +19352,20 @@ This treatment plan should be reviewed and adjusted based on individual patient 
     } catch (error) {
       console.error("Error fetching goods receipts:", error);
       res.status(500).json({ error: "Failed to fetch goods receipts" });
+    }
+  });
+
+  app.get("/api/inventory/goods-receipts/:id", authMiddleware, requireRole(["admin", "doctor", "nurse"]), async (req: TenantRequest, res) => {
+    try {
+      const receiptId = parseInt(req.params.id);
+      const receipt = await inventoryService.getGoodsReceiptById(receiptId, req.tenant!.id);
+      if (!receipt) {
+        return res.status(404).json({ error: "Goods receipt not found" });
+      }
+      res.json(receipt);
+    } catch (error) {
+      console.error("Error fetching goods receipt detail:", error);
+      res.status(500).json({ error: "Failed to fetch goods receipt detail" });
     }
   });
 
@@ -19222,7 +19585,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
   // ====== RETURNS MANAGEMENT MODULE ROUTES ======
 
   // Create a sales return
-  app.post("/api/inventory/returns/sales", authMiddleware, requireRole(["admin", "doctor", "nurse", "receptionist", "pharmacist"]), async (req: TenantRequest, res) => {
+  app.post("/api/inventory/returns/sales", authMiddleware, requireNonPatientRole(), async (req: TenantRequest, res) => {
     try {
       const returnData = z.object({
         originalSaleId: z.number(),
@@ -19290,6 +19653,17 @@ This treatment plan should be reviewed and adjusted based on individual patient 
     } catch (error) {
       console.error("Error fetching return:", error);
       res.status(500).json({ error: "Failed to fetch return" });
+    }
+  });
+
+  app.get("/api/inventory/purchase-orders/:id/items", authMiddleware, requireRole(["admin", "doctor", "nurse", "receptionist"]), async (req: TenantRequest, res) => {
+    try {
+      const purchaseOrderId = parseInt(req.params.id);
+      const items = await inventoryService.getPurchaseOrderItems(purchaseOrderId, req.tenant!.id);
+      res.json(items);
+    } catch (error) {
+      console.error("Error fetching purchase order items:", error);
+      res.status(500).json({ error: "Failed to fetch purchase order items" });
     }
   });
 
@@ -21548,7 +21922,7 @@ Cura EMR Team
       });
       
       // Generate PDF bytes
-      const pdfBytes = await pdfDoc.save();
+      let pdfBytes = await pdfDoc.save();
       
       // Save PDF to disk
       const outputPath = path.join(reportsDir, `${reportId}.pdf`);
@@ -22224,7 +22598,7 @@ Cura EMR Team
       });
       
       // Generate PDF bytes
-      const pdfBytes = await pdfDoc.save();
+      let pdfBytes = await pdfDoc.save();
       
       // Save PDF to disk
       const fileName = `prescription-${imageId}.pdf`;
@@ -22935,7 +23309,7 @@ Cura EMR Team
       });
       
       // Save the PDF
-      const pdfBytes = await pdfDoc.save();
+      let pdfBytes = await pdfDoc.save();
       const fileName = `${study.imageId}.pdf`;
       const filePath = path.join(prescriptionsDir, fileName);
       
@@ -23200,7 +23574,7 @@ Cura EMR Team
 
       console.log('[EMAIL-SHARE] Loading imaging report PDF:', reportPath);
       const buffer = await fs.promises.readFile(reportPath);
-      const pdfBytes = new Uint8Array(buffer);
+      let pdfBytes = new Uint8Array(buffer);
       
       // Extract filename from path for email attachment
       const fileName = path.basename(reportPath);
@@ -24777,7 +25151,7 @@ Cura EMR Team
   // ========================================
 
   // Doctors Fee Routes
-  app.get("/api/pricing/doctors-fees", authMiddleware, requireRole('admin'), multiTenantEnforcer(), async (req: TenantRequest, res) => {
+  app.get("/api/pricing/doctors-fees", authMiddleware, requireRole(['admin', 'doctor', 'nurse', 'patient']), multiTenantEnforcer(), async (req: TenantRequest, res) => {
     try {
       const organizationId = requireOrgId(req);
       const fees = await storage.getDoctorsFees(organizationId);
@@ -24842,7 +25216,7 @@ Cura EMR Team
   });
 
   // Lab Test Pricing Routes
-  app.get("/api/pricing/lab-tests", authMiddleware, requireRole(['admin', 'doctor']), multiTenantEnforcer(), async (req: TenantRequest, res) => {
+  app.get("/api/pricing/lab-tests", authMiddleware, requireRole(['admin', 'doctor', 'nurse']), multiTenantEnforcer(), async (req: TenantRequest, res) => {
     try {
       const organizationId = requireOrgId(req);
       const pricing = await storage.getLabTestPricing(organizationId);
@@ -24852,7 +25226,7 @@ Cura EMR Team
     }
   });
 
-  app.get("/api/pricing/lab-tests/:id", authMiddleware, requireRole(['admin', 'doctor']), multiTenantEnforcer(), async (req: TenantRequest, res) => {
+  app.get("/api/pricing/lab-tests/:id", authMiddleware, requireRole(['admin', 'doctor', 'nurse']), multiTenantEnforcer(), async (req: TenantRequest, res) => {
     try {
       const organizationId = requireOrgId(req);
       const pricing = await storage.getLabTestPricingById(parseInt(req.params.id), organizationId);
@@ -24968,6 +25342,58 @@ Cura EMR Team
       res.json({ message: "Imaging pricing deleted successfully" });
     } catch (error) {
       handleRouteError(error, "delete imaging pricing", res);
+    }
+  });
+
+  // Treatments Pricing Routes
+  app.get("/api/pricing/treatments", authMiddleware, requireRole(['admin', 'doctor', 'nurse', 'patient']), multiTenantEnforcer(), async (req: TenantRequest, res) => {
+    try {
+      const organizationId = requireOrgId(req);
+      const entries = await storage.getTreatments(organizationId);
+      res.json(entries);
+    } catch (error) {
+      handleRouteError(error, "fetch treatments pricing", res);
+    }
+  });
+
+  app.post("/api/pricing/treatments", authMiddleware, requireRole('admin'), multiTenantEnforcer(), async (req: TenantRequest, res) => {
+    try {
+      const organizationId = requireOrgId(req);
+      const payload = enforceCreatedBy(req, {
+        ...req.body,
+        organizationId
+      }, 'createdBy');
+
+      const treatment = await storage.createTreatment(payload);
+      res.status(201).json(treatment);
+    } catch (error) {
+      handleRouteError(error, "create treatment pricing", res);
+    }
+  });
+
+  app.patch("/api/pricing/treatments/:id", authMiddleware, requireRole('admin'), multiTenantEnforcer(), async (req: TenantRequest, res) => {
+    try {
+      const organizationId = requireOrgId(req);
+      const updated = await storage.updateTreatment(parseInt(req.params.id), organizationId, req.body);
+      if (!updated) {
+        return res.status(404).json({ error: "Treatment pricing not found" });
+      }
+      res.json(updated);
+    } catch (error) {
+      handleRouteError(error, "update treatment pricing", res);
+    }
+  });
+
+  app.delete("/api/pricing/treatments/:id", authMiddleware, requireRole('admin'), multiTenantEnforcer(), async (req: TenantRequest, res) => {
+    try {
+      const organizationId = requireOrgId(req);
+      const success = await storage.deleteTreatment(parseInt(req.params.id), organizationId);
+      if (!success) {
+        return res.status(404).json({ error: "Treatment pricing not found" });
+      }
+      res.json({ message: "Treatment pricing deleted successfully" });
+    } catch (error) {
+      handleRouteError(error, "delete treatment pricing", res);
     }
   });
 
@@ -25433,3 +25859,4 @@ Cura EMR Team
   
   return httpServer;
 }
+

@@ -196,6 +196,23 @@ interface GoodsReceiptItem {
   totalPrice: string;
 }
 
+interface GoodsReceiptDetail {
+  id: number;
+  receiptNumber: string;
+  purchaseOrderId?: number;
+  poNumber?: string | null;
+  supplierName?: string | null;
+  receivedDate: string;
+  totalAmount: number;
+  notes?: string | null;
+  items: Array<{
+    itemId: number;
+    itemName: string;
+    quantity: number;
+    unitPrice: string;
+  }>;
+}
+
 // 5. Alerts Interface
 interface StockAlert {
   id: number;
@@ -222,6 +239,16 @@ interface InventoryValue {
   expiredItems: number;
 }
 
+interface LowStockItem {
+  id: number;
+  name: string;
+  sku: string;
+  currentStock: number;
+  minimumStock: number;
+  reorderPoint: number;
+  categoryName?: string;
+}
+
 export default function Inventory() {
   const { canCreate, canEdit, canDelete } = useRolePermissions();
   const [searchTerm, setSearchTerm] = useState("");
@@ -233,6 +260,8 @@ export default function Inventory() {
   const [showStockDialog, setShowStockDialog] = useState(false);
   const [showPODialog, setShowPODialog] = useState(false);
   const [showReceiptDialog, setShowReceiptDialog] = useState(false);
+  const [showGoodsReceiptDetails, setShowGoodsReceiptDetails] = useState(false);
+  const [selectedGoodsReceiptId, setSelectedGoodsReceiptId] = useState<number | null>(null);
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
   const [selectedPO, setSelectedPO] = useState<PurchaseOrder | null>(null);
   const [showPODetailsDialog, setShowPODetailsDialog] = useState(false);
@@ -300,6 +329,23 @@ export default function Inventory() {
     retry: 3,
   });
 
+  const {
+    data: selectedGoodsReceiptDetails,
+    isFetching: goodsReceiptDetailsLoading,
+  } = useQuery<GoodsReceiptDetail | null>({
+    queryKey: ["/api/inventory/goods-receipts", selectedGoodsReceiptId],
+    enabled: Boolean(selectedGoodsReceiptId) && showGoodsReceiptDetails,
+    queryFn: async ({ queryKey }) => {
+      const [, receiptId] = queryKey;
+      const response = await apiRequest(
+        "GET",
+        `/api/inventory/goods-receipts/${receiptId}`,
+      );
+      return response.json();
+    },
+    retry: 3,
+  });
+
   // 5. Alerts Data (Low Stock & Expiry)
   const { data: alerts = [] } = useQuery<StockAlert[]>({
     queryKey: ["/api/inventory/alerts"],
@@ -315,6 +361,16 @@ export default function Inventory() {
     console.log("Viewing purchase order:", po);
     setSelectedPO(po);
     setShowPODetailsDialog(true);
+  };
+
+  const openGoodsReceiptDetails = (receiptId: number) => {
+    setSelectedGoodsReceiptId(receiptId);
+    setShowGoodsReceiptDetails(true);
+  };
+
+  const closeGoodsReceiptDetails = () => {
+    setShowGoodsReceiptDetails(false);
+    setSelectedGoodsReceiptId(null);
   };
 
   // Delete item mutation
@@ -485,6 +541,15 @@ export default function Inventory() {
     retry: 3,
   });
 
+  const { data: lowStockItems = [] } = useQuery<LowStockItem[]>({
+    queryKey: ["/api/inventory/reports/low-stock"],
+    queryFn: async () => {
+      const response = await apiRequest("GET", "/api/inventory/reports/low-stock");
+      return response.json();
+    },
+    retry: 3,
+  });
+
   // Send purchase order email mutation
   const sendEmailMutation = useMutation({
     mutationFn: async ({
@@ -640,10 +705,10 @@ export default function Inventory() {
   });
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-full-width">
       <Header title="Comprehensive Inventory Management" subtitle="Complete healthcare inventory system with Item Master, Stock Tracking, Purchase Orders, Goods Receipt & Alerts" />
       
-      <div className="container mx-auto px-4 lg:px-6 py-6 max-w-7xl">
+      <div className="w-full px-4 lg:px-6 py-6">
         <div className="flex flex-wrap justify-end gap-3 mb-6">
               {canCreate('inventory') && (
                 <Button onClick={() => setShowAddDialog(true)}>
@@ -750,7 +815,7 @@ export default function Inventory() {
             </CardHeader>
             <CardContent>
               <div className="text-2xl font-bold text-orange-500">
-                {inventoryValue?.lowStockItems || 0}
+                {lowStockItems.length || inventoryValue?.lowStockItems || 0}
               </div>
               <p className="text-xs text-muted-foreground">Need restocking</p>
             </CardContent>
@@ -1357,7 +1422,10 @@ export default function Inventory() {
                               {receipt.receiptNumber}
                             </TableCell>
                             <TableCell className="font-mono">
-                              {receipt.poNumber}
+                              {receipt.poNumber ||
+                                (receipt.purchaseOrderId
+                                  ? `PO-${receipt.purchaseOrderId}`
+                                  : "N/A")}
                             </TableCell>
                             <TableCell className="font-medium">
                               {receipt.supplierName}
@@ -1377,7 +1445,11 @@ export default function Inventory() {
                               £{parseFloat(receipt.totalAmount).toFixed(2)}
                             </TableCell>
                             <TableCell>
-                              <Button size="sm" variant="outline">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => openGoodsReceiptDetails(receipt.id)}
+                              >
                                 <Eye className="h-3 w-3 mr-1" />
                                 View Details
                               </Button>
@@ -1391,6 +1463,148 @@ export default function Inventory() {
               </CardContent>
             </Card>
           </TabsContent>
+
+          <Dialog
+            open={showGoodsReceiptDetails}
+            onOpenChange={(open) => {
+              if (!open) {
+                closeGoodsReceiptDetails();
+              }
+            }}
+          >
+            <DialogContent className="max-w-3xl">
+              <DialogHeader>
+                <DialogTitle>Goods Receipt Details</DialogTitle>
+                <DialogDescription>
+                  Review the source purchase order and received items for this
+                  goods receipt.
+                </DialogDescription>
+              </DialogHeader>
+              {goodsReceiptDetailsLoading ? (
+                <div className="flex items-center justify-center py-6 space-x-2 text-sm text-gray-500">
+                  <RefreshCw className="h-4 w-4 animate-spin" />
+                  Loading receipt...
+                </div>
+              ) : selectedGoodsReceiptDetails ? (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-gray-500">
+                        Receipt #
+                      </p>
+                      <p className="font-mono font-semibold">
+                        {selectedGoodsReceiptDetails.receiptNumber}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-gray-500">
+                        Received Date
+                      </p>
+                      <p className="font-medium">
+                        {format(
+                          new Date(selectedGoodsReceiptDetails.receivedDate),
+                          "PPP"
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-gray-500">
+                        Purchase Order
+                      </p>
+                      <p className="font-medium">
+                        {selectedGoodsReceiptDetails.poNumber ||
+                          (selectedGoodsReceiptDetails.purchaseOrderId
+                            ? `PO-${selectedGoodsReceiptDetails.purchaseOrderId}`
+                            : "N/A")}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-gray-500">
+                        Supplier
+                      </p>
+                      <p className="font-medium">
+                        {selectedGoodsReceiptDetails.supplierName || "Unknown"}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <p className="text-xs uppercase tracking-wide text-gray-500">
+                        Notes
+                      </p>
+                      <p className="text-sm text-gray-600">
+                        {selectedGoodsReceiptDetails.notes || "No notes provided."}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs uppercase tracking-wide text-gray-500">
+                        Total Amount
+                      </p>
+                      <p className="text-base font-semibold text-emerald-600">
+                        £{selectedGoodsReceiptDetails.totalAmount.toFixed(2)}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div>
+                    <p className="text-xs uppercase tracking-wide text-gray-500 mb-2">
+                      Items from Purchase Order
+                    </p>
+                    <div className="rounded-md border">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Item</TableHead>
+                            <TableHead>Qty</TableHead>
+                            <TableHead className="text-right">
+                              Unit Price
+                            </TableHead>
+                            <TableHead className="text-right">
+                              Line Total
+                            </TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {selectedGoodsReceiptDetails.items.length === 0 ? (
+                            <TableRow>
+                              <TableCell
+                                colSpan={4}
+                                className="text-center py-4 text-sm text-gray-500"
+                              >
+                                No ordered items found for this receipt.
+                              </TableCell>
+                            </TableRow>
+                          ) : (
+                            selectedGoodsReceiptDetails.items.map((item) => (
+                              <TableRow key={`${item.itemId}-${item.quantity}`}>
+                                <TableCell>{item.itemName}</TableCell>
+                                <TableCell>{item.quantity}</TableCell>
+                                <TableCell className="text-right">
+                                  £{parseFloat(item.unitPrice || "0").toFixed(2)}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  £
+                                  {(
+                                    item.quantity *
+                                    parseFloat(item.unitPrice || "0")
+                                  ).toFixed(2)}
+                                </TableCell>
+                              </TableRow>
+                            ))
+                          )}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <p className="text-center py-6 text-sm text-gray-500">
+                  Unable to load goods receipt details.
+                </p>
+              )}
+            </DialogContent>
+          </Dialog>
 
           {/* 5. Sales Tab */}
           <TabsContent value="sales" className="space-y-6">

@@ -1203,7 +1203,7 @@ Provide intelligent, contextually aware responses that demonstrate advanced lang
 
   private validateAppointmentDuration(duration?: string | number): number {
     // Valid durations: 15, 30, 45, 60, 90, 120 minutes
-    const validDurations = [15, 30, 45, 60, 90, 120];
+    const validDurations = [15, 30, 45, 60, 90, 120, 180];
     
     if (!duration) return 30; // Default
     

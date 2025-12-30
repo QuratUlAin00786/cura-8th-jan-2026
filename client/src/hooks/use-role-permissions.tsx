@@ -68,8 +68,15 @@ export function useRolePermissions() {
   const hasPermission = (module: string, action: PermissionAction): boolean => {
     if (!user?.role) return false;
     
-    // HARDCODED: Admin role has ALL permissions to ALL modules
+    // HARDCODED: Admin role has full access; other roles rely on stored permissions
     if (user.role === 'admin') {
+      return true;
+    }
+
+    const isDoctorRole = isDoctorLike(user?.role);
+    const isNurseRole = user?.role === 'nurse';
+    if ((isDoctorRole || isNurseRole) && module === 'billing') {
+      // Doctors/nurses get full billing access for creating invoices
       return true;
     }
     

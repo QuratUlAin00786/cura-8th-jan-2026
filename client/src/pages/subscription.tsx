@@ -174,27 +174,26 @@ export default function Subscription() {
 
   if (isLoading || packagesLoading) {
     return (
-      <>
+      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-full-width">
         <Header 
           title="Subscription" 
           subtitle="Manage your subscription and billing."
         />
-        <div className="flex-1 flex items-center justify-center">
+        <div className="w-full px-4 sm:px-6 lg:px-8 py-6 flex-1 flex items-center justify-center">
           <LoadingSpinner size="lg" />
         </div>
-      </>
+      </div>
     );
   }
 
   return (
-    <>
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-full-width">
       <Header 
         title="Subscription" 
         subtitle="Manage your subscription and billing."
       />
-      
-      <div className="flex-1 overflow-auto bg-white dark:bg-gray-900 p-6">
-        <div className="max-w-7xl mx-auto space-y-6">
+      <div className="w-full flex-1 overflow-auto bg-white dark:bg-gray-900 px-4 lg:px-6 py-6">
+        <div className="space-y-6">
           {/* Current Subscription */}
           {subscription && (
             <Card className="border border-gray-200 dark:border-gray-700">
@@ -740,6 +739,6 @@ export default function Subscription() {
           )}
         </DialogContent>
       </Dialog>
-    </>
+    </div>
   );
 }

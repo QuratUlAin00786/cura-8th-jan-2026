@@ -34,6 +34,8 @@ import AccountSettings from "@/pages/account-settings";
 import ShiftsPage from "@/pages/shifts";
 import CalendarPage from "@/pages/calendar";
 import FormsPage from "@/pages/forms";
+import FormSharePage from "@/pages/form-share";
+import SharedFormPage from "@/pages/form-open";
 import MessagingPage from "@/pages/messaging";
 import PrescriptionsPage from "@/pages/prescriptions";
 import LabResultsPage from "@/pages/lab-results";
@@ -315,7 +317,9 @@ function ProtectedApp() {
           <Route path="/:subdomain/lab-results" component={LabResultsPage} />
           <Route path="/:subdomain/lab-technician-dashboard" component={LabTechnicianDashboard} />
           <Route path="/:subdomain/imaging" component={ImagingPage} />
+          <Route path="/:subdomain/forms/open/:shareId" component={SharedFormPage} />
           <Route path="/:subdomain/forms" component={FormsPage} />
+          <Route path="/:subdomain/forms/fill" component={FormSharePage} />
           <Route path="/:subdomain/messaging" component={MessagingPage} />
           <Route path="/:subdomain/notifications" component={NotificationsPage} />
           <Route path="/:subdomain/billing" component={BillingPage} />
@@ -406,6 +410,7 @@ function ProtectedApp() {
           <Route path="/lab-results" component={LegacyRouteRedirect} />
           <Route path="/lab-technician-dashboard" component={LegacyRouteRedirect} />
           <Route path="/imaging" component={LegacyRouteRedirect} />
+          <Route path="/forms/fill" component={FormSharePage} />
           <Route path="/forms" component={LegacyRouteRedirect} />
           <Route path="/messaging" component={LegacyRouteRedirect} />
           <Route path="/integrations" component={LegacyRouteRedirect} />
@@ -479,6 +484,7 @@ function AppRouter() {
     const isSubdomainRoute = pathParts.length >= 1 && !isPublicRoute;
     const subdomain = isSubdomainRoute ? potentialSubdomain : null;
 
+    const isSharedFormRoute = location.includes("/forms/fill");
     const isLandingPage =
       location.startsWith("/landing") ||
       location.startsWith("/auth/login") ||
@@ -489,7 +495,8 @@ function AppRouter() {
     // If user is authenticated and on a public/login page, redirect to dashboard with subdomain
     if (
       isAuthenticated &&
-      (isLandingPage || location.includes("/auth/login"))
+      (isLandingPage || location.includes("/auth/login")) &&
+      !isSharedFormRoute
     ) {
       const dashboardPath = subdomain
         ? `/${subdomain}/dashboard`
@@ -504,6 +511,7 @@ function AppRouter() {
     if (
       !isAuthenticated &&
       !isLandingPage &&
+      !isSharedFormRoute &&
       !location.includes("/auth/login") &&
       !location.includes("/auth/reset-password")
     ) {
@@ -544,6 +552,8 @@ function AppRouter() {
     return (
       <Switch>
         {/* Public pages */}
+        <Route path="/forms/fill" component={FormSharePage} />
+        <Route path="/:subdomain/forms/fill" component={FormSharePage} />
         <Route path="/" component={LandingPage} />
         <Route path="/landing" component={LandingPage} />
         <Route path="/landing/about" component={AboutPage} />

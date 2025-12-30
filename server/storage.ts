@@ -1,6 +1,6 @@
 import { isDoctorLike } from './utils/role-utils.js';
 import { 
-  organizations, users, patients, medicalRecords, appointments, invoices, payments, aiInsights, subscriptions, patientCommunications, consultations, notifications, prescriptions, documents, medicalImages, clinicalPhotos, labResults, riskAssessments, claims, revenueRecords, insuranceVerifications, clinicalProcedures, emergencyProtocols, medicationsDatabase, roles, staffShifts, doctorDefaultShifts, gdprConsents, gdprDataRequests, gdprAuditTrail, gdprProcessingActivities, conversations as conversationsTable, messages, messageCampaigns, messageTemplates, voiceNotes, saasOwners, saasPackages, saasSubscriptions, saasPayments, saasInvoices, saasSettings, chatbotConfigs, chatbotSessions, chatbotMessages, chatbotAnalytics, musclePositions, userDocumentPreferences, letterDrafts, forecastModels, financialForecasts, quickbooksConnections, quickbooksSyncLogs, quickbooksCustomerMappings, quickbooksInvoiceMappings, quickbooksPaymentMappings, quickbooksAccountMappings, quickbooksItemMappings, quickbooksSyncConfigs, doctorsFee, labTestPricing, imagingPricing, clinicHeaders, clinicFooters, symptomChecks,
+  organizations, users, patients, medicalRecords, appointments, invoices, payments, aiInsights, subscriptions, patientCommunications, consultations, notifications, prescriptions, documents, medicalImages, clinicalPhotos, labResults, riskAssessments, claims, revenueRecords, insuranceVerifications, clinicalProcedures, emergencyProtocols, medicationsDatabase, roles, staffShifts, doctorDefaultShifts, gdprConsents, gdprDataRequests, gdprAuditTrail, gdprProcessingActivities, conversations as conversationsTable, messages, messageCampaigns, messageTemplates, voiceNotes, saasOwners, saasPackages, saasSubscriptions, saasPayments, saasInvoices, saasSettings, chatbotConfigs, chatbotSessions, chatbotMessages, chatbotAnalytics, musclePositions, userDocumentPreferences, letterDrafts, forecastModels, financialForecasts, quickbooksConnections, quickbooksSyncLogs, quickbooksCustomerMappings, quickbooksInvoiceMappings, quickbooksPaymentMappings, quickbooksAccountMappings, quickbooksItemMappings, quickbooksSyncConfigs, doctorsFee, labTestPricing, imagingPricing, treatments, clinicHeaders, clinicFooters, symptomChecks,
   type Organization, type InsertOrganization,
   type User, type InsertUser,
   type Role, type InsertRole,
@@ -62,6 +62,7 @@ import {
   type DoctorsFee, type InsertDoctorsFee,
   type LabTestPricing, type InsertLabTestPricing,
   type ImagingPricing, type InsertImagingPricing,
+  type Treatment, type InsertTreatment,
   type ClinicHeader, type InsertClinicHeader,
   type ClinicFooter, type InsertClinicFooter
 } from "@shared/schema";
@@ -261,10 +262,13 @@ export interface IStorage {
   // Notifications
   getNotifications(userId: number, organizationId: number, limit?: number): Promise<Notification[]>;
   getUnreadNotificationCount(userId: number, organizationId: number): Promise<number>;
+  getNotificationsByOrganization(organizationId: number, limit?: number): Promise<Notification[]>;
+  getUnreadNotificationCountByOrganization(organizationId: number): Promise<number>;
   getNotification(id: number, userId: number, organizationId: number): Promise<Notification | undefined>;
   createNotification(notification: InsertNotification): Promise<Notification>;
   markNotificationAsRead(id: number, userId: number, organizationId: number): Promise<Notification | undefined>;
   markNotificationAsDismissed(id: number, userId: number, organizationId: number): Promise<Notification | undefined>;
+  markNotificationAsDismissedByOrganization(id: number, organizationId: number): Promise<Notification | undefined>;
   markAllNotificationsAsRead(userId: number, organizationId: number): Promise<void>;
   deleteNotification(id: number, userId: number, organizationId: number): Promise<boolean>;
 
@@ -604,6 +608,13 @@ export interface IStorage {
   createImagingPricing(pricing: InsertImagingPricing): Promise<ImagingPricing>;
   updateImagingPricing(id: number, organizationId: number, updates: Partial<InsertImagingPricing>): Promise<ImagingPricing | undefined>;
   deleteImagingPricing(id: number, organizationId: number): Promise<boolean>;
+
+  // Treatments Pricing
+  getTreatments(organizationId: number): Promise<Treatment[]>;
+  getTreatment(id: number, organizationId: number): Promise<Treatment | undefined>;
+  createTreatment(treatment: InsertTreatment): Promise<Treatment>;
+  updateTreatment(id: number, organizationId: number, updates: Partial<InsertTreatment>): Promise<Treatment | undefined>;
+  deleteTreatment(id: number, organizationId: number): Promise<boolean>;
   
   // Clinic Headers
   createClinicHeader(header: InsertClinicHeader): Promise<ClinicHeader>;
@@ -1345,32 +1356,36 @@ export class DatabaseStorage implements IStorage {
         // Use completely raw SQL to insert appointment without timezone conversion
         const formattedTimestamp = appointment.scheduledAt.replace('T', ' ');
         const created = await tx.execute(sql`
-          INSERT INTO appointments (
-            organization_id, appointment_id, patient_id, provider_id, assigned_role,
-            title, description, scheduled_at, duration, status, type, location, is_virtual, created_by
-          ) VALUES (
-            ${appointment.organizationId}, ${appointment.appointmentId}, ${appointment.patientId},
-            ${appointment.providerId}, ${appointment.assignedRole}, ${appointment.title},
-            ${appointment.description}, ${formattedTimestamp}::timestamp, ${appointment.duration},
-            ${appointment.status}, ${appointment.type}, ${appointment.location}, ${appointment.isVirtual},
-            ${appointment.createdBy}
-          ) RETURNING 
-            id,
-            organization_id AS "organizationId",
-            appointment_id AS "appointmentId",
-            patient_id AS "patientId",
-            provider_id AS "providerId",
-            assigned_role AS "assignedRole",
-            title,
-            description,
-            scheduled_at AS "scheduledAt",
-            duration,
-            status,
-            type,
-            location,
-            is_virtual AS "isVirtual",
-            created_by AS "createdBy",
-            created_at AS "createdAt"
+        INSERT INTO appointments (
+          organization_id, appointment_id, patient_id, provider_id, assigned_role,
+          title, description, scheduled_at, duration, status, type, location, is_virtual, created_by,
+          appointment_type, treatment_id, consultation_id
+        ) VALUES (
+          ${appointment.organizationId}, ${appointment.appointmentId}, ${appointment.patientId},
+          ${appointment.providerId}, ${appointment.assignedRole}, ${appointment.title},
+          ${appointment.description}, ${formattedTimestamp}::timestamp, ${appointment.duration},
+          ${appointment.status}, ${appointment.type}, ${appointment.location}, ${appointment.isVirtual},
+          ${appointment.createdBy}, ${appointment.appointmentType}, ${appointment.treatmentId}, ${appointment.consultationId}
+        ) RETURNING 
+          id,
+          organization_id AS "organizationId",
+          appointment_id AS "appointmentId",
+          patient_id AS "patientId",
+          provider_id AS "providerId",
+          assigned_role AS "assignedRole",
+          title,
+          description,
+          scheduled_at AS "scheduledAt",
+          duration,
+          status,
+          type,
+          appointment_type AS "appointmentType",
+          treatment_id AS "treatmentId",
+          consultation_id AS "consultationId",
+          location,
+          is_virtual AS "isVirtual",
+          created_by AS "createdBy",
+          created_at AS "createdAt"
         `);
         
         const rawRow = created.rows[0] as any;
@@ -1419,7 +1434,7 @@ export class DatabaseStorage implements IStorage {
     }
 
     // Pattern 3: Duration must be in standard increments (15, 30, 45, 60, 90, 120 minutes)
-    const validDurations = [15, 30, 45, 60, 90, 120];
+    const validDurations = [15, 30, 45, 60, 90, 120, 180];
     if (appointment.duration !== undefined && !validDurations.includes(appointment.duration)) {
       errors.push(`Appointment duration must be one of: ${validDurations.join(', ')} minutes`);
     }
@@ -1671,12 +1686,36 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createAiInsight(insight: InsertAiInsight): Promise<AiInsight> {
-    const { metadata, ...baseFields } = insight;
+    const sanitizedMetadata = insight.metadata
+      ? JSON.parse(JSON.stringify(insight.metadata))
+      : null;
+
     const insertData = {
-      ...baseFields,
-      metadata: metadata ? JSON.parse(JSON.stringify(metadata)) : null
+      organizationId: insight.organizationId,
+      patientId: insight.patientId,
+      type: insight.type,
+      title: insight.title,
+      description: insight.description,
+      severity: insight.severity,
+      actionRequired: insight.actionRequired,
+      confidence: insight.confidence,
+      metadata: sanitizedMetadata,
+      status: insight.status,
+      aiStatus: insight.aiStatus,
     };
-    const [created] = await db.insert(aiInsights).values([insertData as any]).returning();
+
+    console.log('[AI-INSIGHTS] inserting payload:', insertData);
+
+    const insertPayload = {
+
+      
+
+
+      ...insertData,
+      id: sql<number>`nextval('curauser24nov25.ai_insights_id_seq'::regclass)`,
+    };
+
+    const [created] = await db.insert(aiInsights).values([insertPayload as any]).returning();
     return created;
   }
 
@@ -1788,11 +1827,6 @@ export class DatabaseStorage implements IStorage {
     aiSuggestions: number;
     revenue: number;
   }> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
     const [totalPatientsResult] = await db
       .select({ count: count() })
       .from(patients)
@@ -1804,8 +1838,7 @@ export class DatabaseStorage implements IStorage {
       .from(appointments)
       .where(and(
         eq(appointments.organizationId, organizationId),
-        gte(appointments.scheduledAt, today),
-        lt(appointments.scheduledAt, tomorrow)
+        sql`${appointments.scheduledAt}::date = CURRENT_DATE`
       ));
 
     // Count all AI insights
@@ -1937,12 +1970,35 @@ export class DatabaseStorage implements IStorage {
       .limit(limit);
   }
 
+  async getNotificationsByOrganization(organizationId: number, limit = 20): Promise<Notification[]> {
+    return await db
+      .select()
+      .from(notifications)
+      .where(and(
+        eq(notifications.organizationId, organizationId),
+        not(eq(notifications.status, 'archived'))
+      ))
+      .orderBy(desc(notifications.createdAt))
+      .limit(limit);
+  }
+
   async getUnreadNotificationCount(userId: number, organizationId: number): Promise<number> {
     const [result] = await db
       .select({ count: count() })
       .from(notifications)
       .where(and(
         eq(notifications.userId, userId),
+        eq(notifications.organizationId, organizationId),
+        eq(notifications.status, 'unread')
+      ));
+    return result?.count || 0;
+  }
+
+  async getUnreadNotificationCountByOrganization(organizationId: number): Promise<number> {
+    const [result] = await db
+      .select({ count: count() })
+      .from(notifications)
+      .where(and(
         eq(notifications.organizationId, organizationId),
         eq(notifications.status, 'unread')
       ));
@@ -1985,8 +2041,11 @@ export class DatabaseStorage implements IStorage {
       })
       .where(and(
         eq(notifications.id, id),
-        eq(notifications.userId, userId),
-        eq(notifications.organizationId, organizationId)
+        eq(notifications.organizationId, organizationId),
+        or(
+          isNull(notifications.userId),
+          eq(notifications.userId, userId),
+        )
       ))
       .returning();
     return updated;
@@ -2003,6 +2062,22 @@ export class DatabaseStorage implements IStorage {
       .where(and(
         eq(notifications.id, id),
         eq(notifications.userId, userId),
+        eq(notifications.organizationId, organizationId)
+      ))
+      .returning();
+    return updated;
+  }
+
+  async markNotificationAsDismissedByOrganization(id: number, organizationId: number): Promise<Notification | undefined> {
+    const [updated] = await db
+      .update(notifications)
+      .set({ 
+        status: 'dismissed', 
+        dismissedAt: new Date(),
+        updatedAt: new Date()
+      })
+      .where(and(
+        eq(notifications.id, id),
         eq(notifications.organizationId, organizationId)
       ))
       .returning();
@@ -7643,6 +7718,44 @@ export class DatabaseStorage implements IStorage {
     const result = await db
       .delete(imagingPricing)
       .where(and(eq(imagingPricing.id, id), eq(imagingPricing.organizationId, organizationId)));
+    return result.rowCount > 0;
+  }
+
+  async getTreatments(organizationId: number): Promise<Treatment[]> {
+    return await db
+      .select()
+      .from(treatments)
+      .where(eq(treatments.organizationId, organizationId))
+      .orderBy(desc(treatments.createdAt));
+  }
+
+  async getTreatment(id: number, organizationId: number): Promise<Treatment | undefined> {
+    const [treatment] = await db
+      .select()
+      .from(treatments)
+      .where(and(eq(treatments.id, id), eq(treatments.organizationId, organizationId)));
+    return treatment || undefined;
+  }
+
+  async createTreatment(treatment: InsertTreatment): Promise<Treatment> {
+    const [created] = await db.insert(treatments).values([treatment]).returning();
+    return created;
+  }
+
+  async updateTreatment(id: number, organizationId: number, updates: Partial<InsertTreatment>): Promise<Treatment | undefined> {
+    const updateData = { ...updates, updatedAt: new Date() };
+    const [updated] = await db
+      .update(treatments)
+      .set(updateData)
+      .where(and(eq(treatments.id, id), eq(treatments.organizationId, organizationId)))
+      .returning();
+    return updated || undefined;
+  }
+
+  async deleteTreatment(id: number, organizationId: number): Promise<boolean> {
+    const result = await db
+      .delete(treatments)
+      .where(and(eq(treatments.id, id), eq(treatments.organizationId, organizationId)));
     return result.rowCount > 0;
   }
 
