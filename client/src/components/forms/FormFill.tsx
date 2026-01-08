@@ -85,7 +85,8 @@ export function FormFill({
       const defaults: Record<string, any> = {};
       data.form.sections.forEach((section: any) => {
         section.fields.forEach((field: any) => {
-          defaults[field.id] = field.type === "checkbox" ? [] : "";
+          const fieldName = String(field.id);
+          defaults[fieldName] = field.fieldType === "checkbox" ? [] : "";
         });
       });
       reset(defaults);
@@ -132,10 +133,13 @@ export function FormFill({
   const onSubmit = async (values: Record<string, any>) => {
     if (!data?.form) return;
     const answers = data.form.sections.flatMap((section: any) =>
-      section.fields.map((field: any) => ({
-        fieldId: field.id,
-        value: values[field.id],
-      })),
+      section.fields.map((field: any) => {
+        const fieldName = String(field.id);
+        return {
+          fieldId: field.id,
+          value: values[fieldName],
+        };
+      }),
     );
     await mutation.mutateAsync(answers);
   };
@@ -241,107 +245,110 @@ export function FormFill({
           {data.form.sections.map((section: any) => (
             <div key={section.id} className="space-y-4">
               <h3 className="text-lg font-semibold">{section.title}</h3>
-              {section.fields.map((field: any) => (
-                <div key={field.id} className="space-y-2">
-                  <Label className="text-sm font-medium">
-                    {field.label}
-                    {field.required && <span className="text-red-500 ml-1">*</span>}
-                  </Label>
-                  {(() => {
-                    switch (field.fieldType) {
-                      case "textarea":
-                        return (
-                          <Textarea
-                            {...register(field.id, { required: field.required })}
-                            placeholder={field.placeholder}
-                          />
-                        );
-                      case "number":
-                        return (
-                          <Input
-                            type="number"
-                            {...register(field.id, { required: field.required })}
-                            placeholder={field.placeholder}
-                          />
-                        );
-                      case "email":
-                        return (
-                          <Input
-                            type="email"
-                            {...register(field.id, { required: field.required })}
-                            placeholder={field.placeholder}
-                          />
-                        );
-                      case "date":
-                        return (
-                          <Input
-                            type="date"
-                            {...register(field.id, { required: field.required })}
-                          />
-                        );
-                      case "checkbox":
-                        return (
-                          <Controller
-                            control={control}
-                            name={field.id}
-                            rules={{ required: field.required }}
-                            defaultValue={[]}
-                            render={({ field: controllerField }) => (
-                              <div className="space-y-2">
-                                {field.fieldOptions?.map((option: string) => (
-                                  <Checkbox
-                                    key={option}
-                                    checked={controllerField.value?.includes(option)}
-                                    onCheckedChange={(checked) => {
-                                      const next = controllerField.value ?? [];
-                                      const exists = next.includes(option);
-                                      if (checked && !exists) {
-                                        controllerField.onChange([...next, option]);
-                                      } else if (!checked && exists) {
-                                        controllerField.onChange(next.filter((item) => item !== option));
-                                      }
-                                    }}
-                                  >
-                                    {option}
-                                  </Checkbox>
-                                ))}
-                              </div>
-                            )}
-                          />
-                        );
-                      case "radio":
-                        return (
-                          <div className="space-y-2">
-                            {field.fieldOptions?.map((option: string) => (
-                              <label
-                                key={option}
-                                className={cn(
-                                  "flex items-center gap-2 rounded-md border px-3 py-2 text-sm",
-                                  "border-border hover:border-primary",
-                                )}
-                              >
-                                <input
-                                  type="radio"
-                                  value={option}
-                                  {...register(field.id, { required: field.required })}
-                                  className="accent-primary"
-                                />
-                                <span>{option}</span>
-                              </label>
-                            ))}
-                          </div>
-                        );
-                      default:
-                        return (
-                          <Input
-                            {...register(field.id, { required: field.required })}
-                            placeholder={field.placeholder}
-                          />
-                        );
-                    }
-                  })()}
-                </div>
-              ))}
+              {section.fields.map((field: any) => {
+                const fieldName = String(field.id);
+                return (
+                  <div key={field.id} className="space-y-2">
+                    <Label className="text-sm font-medium">
+                      {field.label}
+                      {field.required && <span className="text-red-500 ml-1">*</span>}
+                    </Label>
+                    {(() => {
+                      switch (field.fieldType) {
+                        case "textarea":
+                          return (
+                            <Textarea
+                              {...register(fieldName, { required: field.required })}
+                              placeholder={field.placeholder}
+                            />
+                          );
+                        case "number":
+                          return (
+                            <Input
+                              type="number"
+                              {...register(fieldName, { required: field.required })}
+                              placeholder={field.placeholder}
+                            />
+                          );
+                        case "email":
+                          return (
+                            <Input
+                              type="email"
+                              {...register(fieldName, { required: field.required })}
+                              placeholder={field.placeholder}
+                            />
+                          );
+                        case "date":
+                          return (
+                            <Input
+                              type="date"
+                              {...register(fieldName, { required: field.required })}
+                            />
+                          );
+                        case "checkbox":
+                          return (
+                            <Controller
+                              control={control}
+                              name={fieldName}
+                              rules={{ required: field.required }}
+                              defaultValue={[]}
+                              render={({ field: controllerField }) => (
+                                <div className="space-y-2">
+                                  {field.fieldOptions?.map((option: string) => (
+                                    <Checkbox
+                                      key={option}
+                                      checked={controllerField.value?.includes(option)}
+                                      onCheckedChange={(checked) => {
+                                        const next = controllerField.value ?? [];
+                                        const exists = next.includes(option);
+                                        if (checked && !exists) {
+                                          controllerField.onChange([...next, option]);
+                                        } else if (!checked && exists) {
+                                          controllerField.onChange(next.filter((item) => item !== option));
+                                        }
+                                      }}
+                                    >
+                                      {option}
+                                    </Checkbox>
+                                  ))}
+                                </div>
+                              )}
+                            />
+                          );
+                        case "radio":
+                          return (
+                            <div className="space-y-2">
+                              {field.fieldOptions?.map((option: string) => (
+                                <label
+                                  key={option}
+                                  className={cn(
+                                    "flex items-center gap-2 rounded-md border px-3 py-2 text-sm",
+                                    "border-border hover:border-primary",
+                                  )}
+                                >
+                                  <input
+                                    type="radio"
+                                    value={option}
+                                    {...register(fieldName, { required: field.required })}
+                                    className="accent-primary"
+                                  />
+                                  <span>{option}</span>
+                                </label>
+                              ))}
+                            </div>
+                          );
+                        default:
+                          return (
+                            <Input
+                              {...register(fieldName, { required: field.required })}
+                              placeholder={field.placeholder}
+                            />
+                          );
+                      }
+                    })()}
+                  </div>
+                );
+              })}
             </div>
           ))}
           {showClinicFooter && footer && (

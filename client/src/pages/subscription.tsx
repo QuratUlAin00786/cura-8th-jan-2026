@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Header } from "@/components/layout/header";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -51,6 +51,71 @@ const formatPackageFeatures = (features: any): string[] => {
   return featureList;
 };
 
+const getCountdown = (target?: string | Date | null) => {
+  if (!target) return { label: "N/A", isDanger: false };
+  const parts = parseDateParts(target);
+  if (!parts) return { label: "N/A", isDanger: false };
+  const due = new Date(parts.year, parts.month, parts.day, parts.hour, parts.minute);
+  const diffMs = due.getTime() - Date.now();
+  if (diffMs <= 0) {
+    return { label: "Expired", isDanger: true };
+  }
+  const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  const hours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+  const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
+  const seconds = Math.floor((diffMs % (1000 * 60)) / 1000);
+  const labelParts = [];
+  if (days) labelParts.push(`${days}d`);
+  if (hours || days) labelParts.push(`${hours}h`);
+  if (minutes || hours || days) labelParts.push(`${minutes}m`);
+  labelParts.push(`${seconds}s`);
+  return {
+    label: labelParts.join(" "),
+    isDanger: diffMs <= 24 * 60 * 60 * 1000,
+  };
+};
+
+const parseDateParts = (value?: string | Date | null) => {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return {
+      year: value.getFullYear(),
+      month: value.getMonth(),
+      day: value.getDate(),
+      hour: value.getHours(),
+      minute: value.getMinutes(),
+    };
+  }
+  const str = String(value);
+  const isoMatch = str.match(/^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})/);
+  if (!isoMatch) return null;
+  const [, y, mo, d, hh, mm] = isoMatch;
+  return {
+    year: Number(y),
+    month: Number(mo) - 1,
+    day: Number(d),
+    hour: Number(hh),
+    minute: Number(mm),
+  };
+};
+
+const monthNames = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+
+const formatDate = (date?: string | Date | null) => {
+  const parts = parseDateParts(date);
+  if (!parts) return "Not set";
+  return `${parts.day.toString().padStart(2, "0")} ${monthNames[parts.month]} ${parts.year}`;
+};
+
+const formatDateTime = (value?: string | Date | null) => {
+  const parts = parseDateParts(value);
+  if (!parts) return "Not set";
+  const hour12 = parts.hour % 12 === 0 ? 12 : parts.hour % 12;
+  const period = parts.hour >= 12 ? "pm" : "am";
+  const minute = parts.minute.toString().padStart(2, "0");
+  return `${parts.day.toString().padStart(2, "0")} ${monthNames[parts.month]} ${parts.year}, ${hour12}:${minute} ${period}`;
+};
+
 export default function Subscription() {
   const [selectedPlan, setSelectedPlan] = useState<any>(null);
   const [showPaymentDialog, setShowPaymentDialog] = useState(false);
@@ -83,6 +148,46 @@ export default function Subscription() {
           planId: plan.id,
           planName: plan.name,
           amount: plan.price
+        })
+      });
+
+      const data = await response.json();
+      
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        console.error('No checkout URL received:', data);
+        alert('Failed to create checkout session. Please try again.');
+      }
+    } catch (error) {
+      console.error('Error creating Stripe checkout:', error);
+      alert('Failed to connect to payment service. Please try again.');
+    } finally {
+      setIsStripeLoading(false);
+    }
+  };
+
+  const handleInvoicePayment = async (payment: any) => {
+    setIsStripeLoading(true);
+    try {
+      const token = localStorage.getItem('auth_token');
+      const subdomain = localStorage.getItem('user_subdomain') || 'demo';
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'X-Tenant-Subdomain': subdomain
+      };
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+
+      const response = await fetch('/api/stripe/create-checkout-session', {
+        method: 'POST',
+        headers,
+        credentials: 'include',
+        body: JSON.stringify({
+          planId: payment.id,
+          planName: `Invoice ${payment.invoiceNumber}`,
+          amount: parseFloat(payment.amount)
         })
       });
 
@@ -172,6 +277,26 @@ export default function Subscription() {
     features: formatPackageFeatures(pkg.features)
   }));
 
+  const [countdown, setCountdown] = useState<{ label: string; isDanger: boolean }>({
+    label: "Loading...",
+    isDanger: false,
+  });
+  const userRole = localStorage.getItem("user_role");
+  const isSaasAdmin = userRole === "admin";
+
+  useEffect(() => {
+    if (!subscription?.nextBillingAt) {
+      setCountdown({ label: "Not scheduled", isDanger: false });
+      return;
+    }
+    const update = () => {
+      setCountdown(getCountdown(subscription.nextBillingAt));
+    };
+    update();
+    const timer = setInterval(update, 15 * 1000);
+    return () => clearInterval(timer);
+  }, [subscription?.nextBillingAt]);
+
   if (isLoading || packagesLoading) {
     return (
       <div className="min-h-screen bg-gray-50 dark:bg-gray-900 page-full-width">
@@ -211,7 +336,7 @@ export default function Subscription() {
                       <span>Active Plan</span>
                     </div>
                     <p className="text-2xl font-bold capitalize">
-                      {subscription.plan}
+                      {subscription.planName}
                     </p>
                     <div className="flex flex-wrap gap-2">
                       <Badge 
@@ -273,10 +398,8 @@ export default function Subscription() {
                       </span>
                     </div>
                     <p className="text-xl font-bold">
-                      {subscription.status === 'trial' 
-                        ? new Date(subscription.trialEndsAt!).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
-                        : subscription.nextBillingAt 
-                        ? new Date(subscription.nextBillingAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                      {subscription.nextBillingAt 
+                        ? formatDateTime(subscription.nextBillingAt)
                         : "—"
                       }
                     </p>
@@ -285,6 +408,55 @@ export default function Subscription() {
                         <span className="text-lg font-semibold text-foreground">£{subscription.monthlyPrice}</span>/month
                       </p>
                     )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {subscription && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Current SaaS Subscription Snapshot</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <p className="text-sm text-gray-600">
+                  Created at: {formatDateTime(subscription.createdAt)}
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">Package</p>
+                    <p className="text-lg font-semibold">{subscription.planName || subscription.plan || "N/A"}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">Status</p>
+                    <p className="text-lg font-semibold">
+                      {subscription.status.charAt(0).toUpperCase() + subscription.status.slice(1)}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">Payment Status</p>
+                    <p className="text-lg font-semibold">
+                      {subscription.paymentStatus || "pending"}
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">Monthly Recurring</p>
+                    <p className="text-lg font-semibold">£{subscription.monthlyPrice || "0"}</p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">Next billing</p>
+                    <p className="text-lg font-semibold">
+                      {subscription.nextBillingAt ? formatDateTime(subscription.nextBillingAt) : "—"}
+                    </p>
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm text-muted-foreground">Countdown</p>
+                    <p className={`text-lg font-semibold ${countdown.isDanger ? "text-red-600" : "text-emerald-600"}`}>
+                      {countdown.label}
+                    </p>
                   </div>
                 </div>
               </CardContent>
@@ -301,7 +473,7 @@ export default function Subscription() {
               {plans.map((plan) => (
                 <Card 
                   key={plan.id} 
-                  className={`relative ${
+                  className={`relative flex flex-col h-full ${
                     plan.popular 
                       ? "border-primary" 
                       : ""
@@ -331,7 +503,7 @@ export default function Subscription() {
                     </div>
                   </CardHeader>
                   
-                  <CardContent className="space-y-4">
+                <CardContent className="space-y-4 flex-1">
                     <div className="space-y-2">
                       {plan.features.map((feature, index) => (
                         <div key={index} className="flex items-start space-x-2">
@@ -347,7 +519,8 @@ export default function Subscription() {
                         </div>
                       ))}
                     </div>
-                    
+                  </CardContent>
+                  <div className="px-6 pb-6">
                     <Button 
                       className="w-full"
                       variant={plan.popular ? "default" : "outline"}
@@ -370,7 +543,7 @@ export default function Subscription() {
                           : "Upgrade Now"
                       )}
                     </Button>
-                  </CardContent>
+                  </div>
                 </Card>
               ))}
             </div>
@@ -501,32 +674,34 @@ export default function Subscription() {
                             {new Date(payment.periodStart).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {new Date(payment.periodEnd).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap">
-                            <Button 
-                              variant="ghost" 
-                              size="sm"
-                              onClick={() => {
-                                const dueDate = new Date(payment.periodEnd);
-                                dueDate.setDate(dueDate.getDate() + 30);
-                                setSelectedInvoice({
-                                  id: payment.id,
-                                  invoiceNumber: payment.invoiceNumber,
-                                  organizationName: subscription?.plan || 'Organization',
-                                  organizationAddress: `${subscription?.plan || 'Healthcare'}\nHealthcare Organization\nUnited Kingdom`,
-                                  amount: payment.amount,
-                                  currency: payment.currency || 'GBP',
-                                  paymentMethod: payment.paymentMethod,
-                                  paymentStatus: payment.paymentStatus,
-                                  createdAt: payment.paymentDate || payment.periodStart,
-                                  dueDate: dueDate.toISOString(),
-                                  description: `Monthly subscription payment - ${subscription?.plan || 'Subscription'}`
-                                });
-                                setShowInvoiceDialog(true);
-                              }}
-                              data-testid={`button-download-invoice-${payment.id}`}
-                            >
-                              <Download className="h-4 w-4 mr-1" />
-                              Invoice
-                            </Button>
+                            <div className="flex items-center gap-2">
+                              <Button 
+                                variant="ghost" 
+                                size="sm"
+                                onClick={() => {
+                                  const dueDate = new Date(payment.periodEnd);
+                                  dueDate.setDate(dueDate.getDate() + 30);
+                                  setSelectedInvoice({
+                                    id: payment.id,
+                                    invoiceNumber: payment.invoiceNumber,
+                                    organizationName: subscription?.plan || 'Organization',
+                                    organizationAddress: `${subscription?.plan || 'Healthcare'}\nHealthcare Organization\nUnited Kingdom`,
+                                    amount: payment.amount,
+                                    currency: payment.currency || 'GBP',
+                                    paymentMethod: payment.paymentMethod,
+                                    paymentStatus: payment.paymentStatus,
+                                    createdAt: payment.paymentDate || payment.periodStart,
+                                    dueDate: dueDate.toISOString(),
+                                    description: `Monthly subscription payment - ${subscription?.plan || 'Subscription'}`
+                                  });
+                                  setShowInvoiceDialog(true);
+                                }}
+                                data-testid={`button-download-invoice-${payment.id}`}
+                              >
+                                <Download className="h-4 w-4 mr-1" />
+                                Invoice
+                              </Button>
+                            </div>
                           </td>
                         </tr>
                       ))}

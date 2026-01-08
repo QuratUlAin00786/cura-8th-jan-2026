@@ -4,9 +4,13 @@ import jwt from "jsonwebtoken";
 import { storage } from "./storage";
 import { db } from "./db";
 import nodemailer from "nodemailer";
-import { saasOwners, organizations, users } from "@shared/schema";
+import { saasOwners, organizations, users, saasPayments, saasInvoices } from "@shared/schema";
 import { eq } from "drizzle-orm";
 import { emailService } from "./services/email";
+import { sendReminderForSubscription } from "./services/subscription-reminders";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import fs from "fs";
+import path from "path";
 
 const SAAS_JWT_SECRET =
   process.env.SAAS_JWT_SECRET || "saas-super-secret-key-change-in-production";
@@ -1614,6 +1618,27 @@ The Cura EMR Team`,
     },
   );
 
+  app.delete(
+    "/api/saas/billing/payments/:id",
+    verifySaaSToken,
+    async (req: Request, res: Response) => {
+      try {
+        const paymentId = parseInt(req.params.id);
+        if (isNaN(paymentId)) {
+          return res.status(400).json({ error: "Invalid payment ID" });
+        }
+        const deleted = await storage.deletePayment(paymentId);
+        if (!deleted) {
+          return res.status(404).json({ error: "Payment not found" });
+        }
+        res.json({ success: true });
+      } catch (error) {
+        console.error("Error deleting payment:", error);
+        res.status(500).json({ error: "Failed to delete payment" });
+      }
+    },
+  );
+
   // Packages Management
   app.get(
     "/api/saas/packages",
@@ -1780,6 +1805,12 @@ The Cura EMR Team`,
 
         // Ensure dates are properly formatted
         const currentTime = new Date();
+        const potentialCreatedAt = paymentData.createdAt ? new Date(paymentData.createdAt) : null;
+        const clientCreatedAt =
+          potentialCreatedAt && !Number.isNaN(potentialCreatedAt.getTime())
+            ? potentialCreatedAt
+            : null;
+        const createdAt = clientCreatedAt || currentTime;
         const dueDateObj = paymentData.dueDate
           ? new Date(paymentData.dueDate)
           : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
@@ -1801,6 +1832,8 @@ The Cura EMR Team`,
           periodEnd: new Date(currentTime.getTime() + 30 * 24 * 60 * 60 * 1000),
           paymentProvider: paymentData.paymentMethod,
           metadata: paymentData.metadata || {},
+          createdAt,
+          updatedAt: createdAt,
         };
 
         const payment = await storage.createSaasPayment(processedPaymentData);
@@ -2029,6 +2062,438 @@ The Cura EMR Team`,
       } catch (error) {
         console.error("Error testing email:", error);
         res.status(500).json({ message: "Failed to test email" });
+      }
+    },
+  );
+
+  app.get(
+    "/api/saas/billing/subscriptions",
+    verifySaaSToken,
+    async (_req: Request, res: Response) => {
+      try {
+        const subscriptions = await storage.getAllSaaSSubscriptions();
+        res.json(subscriptions);
+      } catch (error) {
+        console.error("Error fetching subscriptions:", error);
+        res.status(500).json({ error: "Failed to fetch subscriptions" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/saas/billing/subscriptions",
+    verifySaaSToken,
+    async (req: Request, res: Response) => {
+      try {
+        const data = req.body;
+        if (!data.organizationId || !data.packageId) {
+          return res.status(400).json({ error: "organizationId and packageId are required" });
+        }
+
+        const subscription = await storage.createSaaSSubscription({
+          organizationId: Number(data.organizationId),
+          packageId: Number(data.packageId),
+          status: data.status || "active",
+          paymentStatus: data.paymentStatus || "pending",
+          currentPeriodStart: data.currentPeriodStart ? new Date(data.currentPeriodStart) : undefined,
+          currentPeriodEnd: data.currentPeriodEnd ? new Date(data.currentPeriodEnd) : undefined,
+          expiresAt: data.expiresAt ? new Date(data.expiresAt) : undefined,
+          details: data.details || null,
+          maxUsers: data.maxUsers ?? null,
+          maxPatients: data.maxPatients ?? null,
+        });
+
+        res.json({ success: true, subscription });
+      } catch (error) {
+        console.error("Error creating subscription:", error);
+        res.status(500).json({ error: "Failed to create subscription" });
+      }
+    },
+  );
+
+  app.patch(
+    "/api/saas/billing/subscriptions/:id",
+    verifySaaSToken,
+    async (req: Request, res: Response) => {
+      try {
+        const subscriptionId = parseInt(req.params.id);
+        if (isNaN(subscriptionId)) {
+          return res.status(400).json({ error: "Invalid subscription ID" });
+        }
+
+        const updates: any = { ...req.body };
+        if (updates.currentPeriodStart) {
+          updates.currentPeriodStart = new Date(updates.currentPeriodStart);
+        }
+        if (updates.currentPeriodEnd) {
+          updates.currentPeriodEnd = new Date(updates.currentPeriodEnd);
+        }
+        if (updates.expiresAt) {
+          updates.expiresAt = new Date(updates.expiresAt);
+        }
+
+        const updated = await storage.updateSaaSSubscription(subscriptionId, updates);
+        if (!updated) {
+          return res.status(404).json({ error: "Subscription not found" });
+        }
+
+        res.json({ success: true, updated });
+      } catch (error) {
+        console.error("Error updating subscription:", error);
+        res.status(500).json({ error: "Failed to update subscription" });
+      }
+    },
+  );
+
+  app.delete(
+    "/api/saas/billing/subscriptions/:id",
+    verifySaaSToken,
+    async (req: Request, res: Response) => {
+      try {
+        const subscriptionId = parseInt(req.params.id);
+        if (isNaN(subscriptionId)) {
+          return res.status(400).json({ error: "Invalid subscription ID" });
+        }
+
+        const deleted = await storage.deleteSaaSSubscription(subscriptionId);
+        if (!deleted) {
+          return res.status(404).json({ error: "Subscription not found" });
+        }
+
+        res.json({ success: true });
+      } catch (error) {
+        console.error("Error deleting subscription:", error);
+        res.status(500).json({ error: "Failed to delete subscription" });
+      }
+    },
+  );
+
+  app.post(
+    "/api/saas/billing/reminders/:subscriptionId",
+    verifySaaSToken,
+    async (req: Request, res: Response) => {
+      try {
+        const subscriptionId = parseInt(req.params.subscriptionId);
+        const { level } = req.body as { level?: string };
+        if (isNaN(subscriptionId)) {
+          return res.status(400).json({ error: "Invalid subscription ID" });
+        }
+        if (!level) {
+          return res.status(400).json({ error: "Reminder level is required" });
+        }
+
+        await sendReminderForSubscription(subscriptionId, level);
+        res.json({ success: true });
+      } catch (error: any) {
+        console.error("Error sending manual reminder:", error);
+        res.status(500).json({ error: "Failed to send reminder", message: error.message });
+      }
+    },
+  );
+
+  app.post(
+    "/api/saas/billing/payments/:id/share",
+    verifySaaSToken,
+    async (req: Request, res: Response) => {
+      try {
+        const paymentId = parseInt(req.params.id);
+        const { email } = req.body;
+
+        if (isNaN(paymentId)) {
+          return res.status(400).json({ error: "Invalid payment ID" });
+        }
+
+        if (!email || typeof email !== "string") {
+          return res.status(400).json({ error: "Recipient email is required" });
+        }
+
+        const [payment] = await db
+          .select({
+            id: saasPayments.id,
+            invoiceNumber: saasPayments.invoiceNumber,
+            amount: saasPayments.amount,
+            currency: saasPayments.currency,
+            description: saasPayments.description,
+            paymentMethod: saasPayments.paymentMethod,
+            paymentStatus: saasPayments.paymentStatus,
+            dueDate: saasPayments.dueDate,
+            paymentCreatedAt: saasPayments.createdAt,
+            organizationName: organizations.name,
+            organizationEmail: organizations.email,
+            organizationRegion: organizations.region,
+            invoiceAmount: saasInvoices.amount,
+            invoiceCurrency: saasInvoices.currency,
+            invoiceIssueDate: saasInvoices.issueDate,
+            invoiceDueDate: saasInvoices.dueDate,
+            invoicePeriodStart: saasInvoices.periodStart,
+            invoicePeriodEnd: saasInvoices.periodEnd,
+            invoiceLineItems: saasInvoices.lineItems,
+          })
+          .from(saasPayments)
+          .leftJoin(organizations, eq(saasPayments.organizationId, organizations.id))
+          .leftJoin(saasInvoices, eq(saasInvoices.invoiceNumber, saasPayments.invoiceNumber))
+          .where(eq(saasPayments.id, paymentId))
+          .limit(1);
+
+        if (!payment) {
+          return res.status(404).json({ error: "Payment not found" });
+        }
+
+        const pdfDoc = await PDFDocument.create();
+        const page = pdfDoc.addPage([595, 842]);
+        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+        const formatCurrency = (value: number) =>
+          new Intl.NumberFormat("en-GB", {
+            style: "currency",
+            currency: (payment.currency || "GBP") as "GBP",
+          }).format(value);
+        const formatDate = (value?: Date | string | null) => {
+          const dateValue = value ? new Date(value) : new Date();
+          return dateValue.toLocaleDateString("en-GB", {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          });
+        };
+        const drawRightAligned = (text: string, x: number, y: number, size: number) => {
+          const textWidth = font.widthOfTextAtSize(text, size);
+          page.drawText(text, { x: x - textWidth, y, size, font });
+        };
+
+        const vatRate = 0.2;
+        const baseAmount = Number(payment.invoiceAmount ?? payment.amount ?? 0);
+        const vatAmount = Number((baseAmount * vatRate).toFixed(2));
+        const totalAmount = Number((baseAmount + vatAmount).toFixed(2));
+
+        const lineItems =
+          Array.isArray(payment.invoiceLineItems) && payment.invoiceLineItems.length > 0
+            ? payment.invoiceLineItems
+            : [
+                {
+                  description: payment.description || "Cura EMR Software Subscription",
+                  quantity: 1,
+                  rate: baseAmount,
+                  amount: baseAmount,
+                },
+              ];
+        const logoPath = path.join(process.cwd(), "client", "public", "cura-logo-chatbot.png");
+        let logoImage: undefined | any;
+        if (fs.existsSync(logoPath)) {
+          try {
+            const logoBytes = fs.readFileSync(logoPath);
+            logoImage = await pdfDoc.embedPng(logoBytes);
+          } catch (error) {
+            console.warn("Failed to embed invoice logo", error);
+          }
+        }
+
+        const margin = 45;
+        const headerTop = 800;
+        const logoSize = 48;
+        if (logoImage) {
+          const logoScale = logoSize / logoImage.width;
+          const logoHeight = logoImage.height * logoScale;
+          page.drawImage(logoImage, {
+            x: margin,
+            y: headerTop - logoHeight + 6,
+            width: logoSize,
+            height: logoHeight,
+          });
+        }
+        const brandTextX = margin + (logoImage ? logoSize + 12 : 0);
+        const brandTitleY = headerTop - 6;
+        page.drawText("Cura Software Limited", {
+          x: brandTextX,
+          y: brandTitleY,
+          size: 18,
+          font: fontBold,
+          color: rgb(0.1, 0.1, 0.4),
+        });
+        page.drawText("Healthcare Management Solutions", {
+          x: brandTextX,
+          y: brandTitleY - 18,
+          size: 11,
+          font,
+          color: rgb(0.2, 0.2, 0.2),
+        });
+        const invoiceInfoX = 420;
+        page.drawText("INVOICE", {
+          x: invoiceInfoX,
+          y: headerTop + 4,
+          size: 24,
+          font: fontBold,
+          color: rgb(0.05, 0.1, 0.3),
+        });
+        page.drawText(`Invoice #${payment.invoiceNumber}`, {
+          x: invoiceInfoX,
+          y: headerTop - 10,
+          size: 11,
+          font,
+        });
+        page.drawText(`Date: ${formatDate(payment.invoiceIssueDate || payment.paymentCreatedAt)}`, {
+          x: invoiceInfoX,
+          y: headerTop - 24,
+          size: 11,
+          font,
+        });
+        page.drawText(
+          `Due: ${formatDate(payment.invoiceDueDate || payment.dueDate || payment.paymentCreatedAt)}`,
+          {
+            x: invoiceInfoX,
+            y: headerTop - 38,
+            size: 11,
+            font,
+          },
+        );
+
+        const blockY = 730;
+        const blockGap = 150;
+        const lineSpacing = 15;
+        const paintBlock = (title: string, lines: string[], x: number) => {
+          page.drawText(title, { x, y: blockY, size: 12, font: fontBold });
+          lines.forEach((line, index) => {
+            page.drawText(line, {
+              x,
+              y: blockY - lineSpacing * (index + 1),
+              size: 10,
+              font,
+            });
+          });
+        };
+
+        paintBlock(
+          "From:",
+          [
+            "Cura Software Limited",
+            "Company Registration: 16556912",
+            "Ground Floor Unit 2",
+            "Drayton Court, Drayton Road",
+            "Solihull, England B90 4NG",
+            "United Kingdom",
+            "Email: billing@curaemr.ai",
+            "Phone: +44 (0) 121 456 7890",
+          ],
+          margin,
+        );
+
+        paintBlock(
+          "Bill To:",
+          [
+            payment.organizationName,
+            payment.organizationEmail,
+            payment.organizationRegion || "United Kingdom",
+          ].filter(Boolean) as string[],
+          margin + blockGap,
+        );
+
+        paintBlock(
+          "Payment Info:",
+          [
+            `Status: ${payment.paymentStatus}`,
+            `Method: ${payment.paymentMethod || "Unknown"}`,
+          ],
+          margin + blockGap * 2,
+        );
+
+        const tableStartY = 550;
+        const headersY = tableStartY + 20;
+        const columnPositions = {
+          description: margin,
+          qty: margin + 270,
+          unit: margin + 330,
+          total: margin + 430,
+        };
+        page.drawText("Description", { x: columnPositions.description, y: headersY, size: 11, font: fontBold });
+        page.drawText("Qty", { x: columnPositions.qty, y: headersY, size: 11, font: fontBold });
+        page.drawText("Unit Price", { x: columnPositions.unit, y: headersY, size: 11, font: fontBold });
+        page.drawText("Total", { x: columnPositions.total, y: headersY, size: 11, font: fontBold });
+
+        let currentY = headersY - 20;
+        lineItems.forEach((item: any) => {
+          page.drawText(String(item.description), { x: columnPositions.description, y: currentY, size: 10, font });
+          page.drawText(String(item.quantity), { x: columnPositions.qty, y: currentY, size: 10, font });
+          page.drawText(formatCurrency(Number(item.rate)), {
+            x: columnPositions.unit,
+            y: currentY,
+            size: 10,
+            font,
+          });
+          page.drawText(formatCurrency(Number(item.amount)), {
+            x: columnPositions.total,
+            y: currentY,
+            size: 10,
+            font,
+          });
+          currentY -= 18;
+        });
+
+        const pageWidth = 595;
+        const minSummaryY = tableStartY - 150;
+        const summaryBoxY = Math.min(currentY - 40, minSummaryY);
+        const boxWidth = 170;
+        const boxHeight = 70;
+        const boxX = pageWidth - margin - boxWidth;
+        const dividerY = summaryBoxY + boxHeight + 20;
+        page.drawLine({
+          start: { x: margin, y: dividerY },
+          end: { x: pageWidth - margin, y: dividerY },
+          thickness: 0.5,
+          color: rgb(0.8, 0.8, 0.8),
+        });
+        page.drawRectangle({
+          x: boxX,
+          y: summaryBoxY,
+          width: boxWidth,
+          height: boxHeight,
+          borderWidth: 0.5,
+          borderColor: rgb(0.8, 0.8, 0.8),
+          color: rgb(0.97, 0.97, 0.97),
+        });
+        page.drawText("Subtotal", { x: boxX + 12, y: summaryBoxY + 50, size: 10, font });
+        drawRightAligned(formatCurrency(baseAmount), boxX + boxWidth - 12, summaryBoxY + 50, 10);
+        page.drawText("VAT (20%)", { x: boxX + 12, y: summaryBoxY + 30, size: 10, font });
+        drawRightAligned(formatCurrency(vatAmount), boxX + boxWidth - 12, summaryBoxY + 30, 10);
+        page.drawText("Total Amount", { x: boxX + 12, y: summaryBoxY + 10, size: 11, font: fontBold });
+        drawRightAligned(formatCurrency(totalAmount), boxX + boxWidth - 12, summaryBoxY + 10, 11);
+
+        page.drawText("Payment Terms", { x: margin, y: summaryBoxY - 40, size: 12, font: fontBold });
+        const terms = [
+          "• Payment is due within 30 days of invoice date",
+          "• Late payment charges may apply",
+          "• For queries contact billing@curaemr.ai",
+          "• Online payments available via customer portal",
+        ];
+        terms.forEach((term, index) => {
+          page.drawText(term, {
+            x: margin,
+            y: summaryBoxY - 60 - index * 16,
+            size: 10,
+            font,
+          });
+        });
+
+        const pdfBytes = await pdfDoc.save();
+
+        await emailService.sendEmail({
+          to: email,
+          subject: `Invoice ${payment.invoiceNumber} from Cura EMR`,
+          text: `Hello,
+
+Attached is invoice ${payment.invoiceNumber} for ${payment.organizationName}.`,
+          attachments: [
+            {
+              filename: `${payment.invoiceNumber}.pdf`,
+              content: Buffer.from(pdfBytes),
+              contentType: "application/pdf",
+            },
+          ],
+        });
+
+        res.json({ success: true });
+      } catch (error: any) {
+        console.error("Error sharing invoice:", error);
+        res.status(500).json({ error: "Failed to share invoice" });
       }
     },
   );

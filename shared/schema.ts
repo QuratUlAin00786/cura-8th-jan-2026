@@ -158,6 +158,7 @@ export const organizations = pgTable("organizations", {
   }>().default({}),
   accessLevel: varchar("access_level", { length: 50 }).default("full"),
   subscriptionStatus: varchar("subscription_status", { length: 20 }).notNull().default("trial"), // trial, active, suspended, cancelled
+  paymentStatus: varchar("payment_status", { length: 20 }).notNull().default("trial"), // trial, paid, unpaid, failed, pending
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

@@ -70,6 +70,13 @@ import {
 import { db } from "./db";
 import { eq, and, desc, asc, count, not, sql, gte, lt, lte, isNotNull, or, ilike, ne } from "drizzle-orm";
 
+const GRACE_PERIOD_DAYS = 13;
+const addDays = (date: Date, days: number) => {
+  const result = new Date(date);
+  result.setDate(result.getDate() + days);
+  return result;
+};
+
 // Subscription Cache Implementation
 interface SubscriptionCacheEntry {
   data: Subscription;
@@ -227,6 +234,7 @@ export interface IStorage {
   createPayment(payment: any): Promise<any>;
   getPaymentsByInvoice(invoiceId: number, organizationId: number): Promise<any[]>;
   getPaymentsByOrganization(organizationId: number): Promise<any[]>;
+  deletePayment(id: number): Promise<boolean>;
 
   // AI Insights
   getAiInsight(id: number, organizationId: number): Promise<AiInsight | undefined>;
@@ -466,6 +474,10 @@ export interface IStorage {
   createSaasPayment(paymentData: any): Promise<any>;
   updatePaymentStatus(paymentId: number, status: string, transactionId?: string): Promise<any>;
   suspendUnpaidSubscriptions(): Promise<void>;
+  getAllSaaSSubscriptions(): Promise<any[]>;
+  createSaaSSubscription(subscriptionData: InsertSaaSSubscription): Promise<any>;
+  updateSaaSSubscription(subscriptionId: number, updates: Partial<InsertSaaSSubscription>): Promise<any>;
+  deleteSaaSSubscription(subscriptionId: number): Promise<boolean>;
   createPatientInvoice(invoiceData: any): Promise<any>;
   getOverdueInvoices(): Promise<any[]>;
   calculateMonthlyRecurring(): Promise<number>;
@@ -5875,6 +5887,7 @@ export class DatabaseStorage implements IStorage {
     if (customerData.name) updateData.name = customerData.name;
     if (customerData.brandName) updateData.brandName = customerData.brandName;
     if (customerData.subscriptionStatus) updateData.subscriptionStatus = customerData.subscriptionStatus;
+    if (customerData.paymentStatus) updateData.paymentStatus = customerData.paymentStatus;
     if (customerData.features) updateData.features = JSON.stringify(customerData.features);
     
     // Handle billing package assignment/update
@@ -6002,7 +6015,13 @@ export class DatabaseStorage implements IStorage {
       }
     }
 
-    return { success: true, organization };
+    const [updatedSubscription] = await db
+      .select()
+      .from(saasSubscriptions)
+      .where(eq(saasSubscriptions.organizationId, organizationId))
+      .limit(1);
+
+    return { success: true, organization, subscription: updatedSubscription ?? null };
   }
 
   async updateCustomerStatus(organizationId: number, status: string): Promise<any> {
@@ -6025,40 +6044,107 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getAllCustomers(search?: string, status?: string): Promise<any[]> {
-    // SaaS portal fix: Simplified query without problematic subscription joins
+    const daysActiveExpression = sql<number | null>`
+      CASE
+        WHEN ${saasSubscriptions.currentPeriodStart} IS NOT NULL
+          AND ${saasSubscriptions.currentPeriodEnd} IS NOT NULL
+          AND ${saasSubscriptions.paymentStatus} = 'paid'
+          THEN GREATEST(
+            0,
+            FLOOR(
+              EXTRACT(
+                EPOCH FROM (${saasSubscriptions.currentPeriodEnd} - ${saasSubscriptions.currentPeriodStart})
+              ) / 86400
+            )
+          )
+        ELSE NULL
+      END
+    `;
+
+    const latestSubscriptionId = sql<number | null>`
+      (
+        SELECT id
+        FROM saas_subscriptions
+        WHERE organization_id = ${organizations.id}
+        ORDER BY
+          current_period_end DESC NULLS LAST,
+          id DESC
+        LIMIT 1
+      )
+    `;
+
     let query = db.select({
       id: organizations.id,
       name: organizations.name,
       brandName: organizations.brandName,
       subdomain: organizations.subdomain,
       subscriptionStatus: organizations.subscriptionStatus,
+      organizationPaymentStatus: organizations.paymentStatus,
+      computedSubscriptionStatus: sql<string>`
+        CASE
+          WHEN ${saasSubscriptions.expiresAt} IS NOT NULL AND ${saasSubscriptions.expiresAt} <= now()
+            THEN 'expired'
+          ELSE ${organizations.subscriptionStatus}
+        END
+      `.as('computedSubscriptionStatus'),
       createdAt: organizations.createdAt,
       features: organizations.features,
       userCount: count(users.id),
-      packageName: sql<string>`'Enterprise'`.as('packageName'), // Default package name
-      billingPackageId: sql<number>`1`.as('billingPackageId'), // Default package ID
-      adminEmail: sql<string>`(
-        SELECT email FROM ${users} 
-        WHERE ${users.organizationId} = ${organizations.id} 
-        AND ${users.role} = 'admin' 
-        LIMIT 1
-      )`.as('adminEmail'),
+      packageName: sql<string>`'Enterprise'`.as('packageName'),
+      billingPackageId: sql<number>`1`.as('billingPackageId'),
+      adminEmail: sql<string>`
+        MAX(
+          CASE
+            WHEN ${users.role} = 'admin' THEN ${users.email}
+            ELSE NULL
+          END
+        )
+      `.as('adminEmail'),
+      subscriptionPaymentStatus: saasSubscriptions.paymentStatus,
+      subscriptionStart: saasSubscriptions.currentPeriodStart,
+      subscriptionEnd: saasSubscriptions.currentPeriodEnd,
+      expiresAt: saasSubscriptions.expiresAt,
+      daysActive: daysActiveExpression.as('daysActive'),
+      expiryAlertLevel: sql<string>`
+        CASE
+          WHEN ${saasSubscriptions.expiresAt} IS NULL THEN 'none'
+          WHEN ${saasSubscriptions.expiresAt} <= now() THEN 'expired'
+          WHEN ${saasSubscriptions.expiresAt} <= now() + interval '1 day' THEN 'due_1'
+          WHEN ${saasSubscriptions.expiresAt} <= now() + interval '7 day' THEN 'due_7'
+          ELSE 'none'
+        END
+      `.as('expiryAlertLevel'),
+      daysLeft: sql<number | null>`
+        CASE
+          WHEN ${saasSubscriptions.expiresAt} IS NOT NULL
+            THEN GREATEST(
+              0,
+              CEIL(EXTRACT(EPOCH FROM (${saasSubscriptions.expiresAt} - now())) / 86400)
+            )
+          ELSE NULL
+        END
+      `.as('daysLeft'),
     })
     .from(organizations)
     .leftJoin(users, eq(organizations.id, users.organizationId))
+    .leftJoin(saasSubscriptions, eq(saasSubscriptions.id, latestSubscriptionId))
     .groupBy(
       organizations.id,
       organizations.name,
       organizations.brandName,
       organizations.subdomain,
       organizations.subscriptionStatus,
+      organizations.paymentStatus,
       organizations.createdAt,
-      organizations.features
+      organizations.features,
+      saasSubscriptions.paymentStatus,
+      saasSubscriptions.currentPeriodStart,
+      saasSubscriptions.currentPeriodEnd,
+      saasSubscriptions.expiresAt
     );
 
-    // Apply filters
     const whereConditions = [];
-    
+
     if (status && status !== 'all') {
       whereConditions.push(eq(organizations.subscriptionStatus, status));
     }
@@ -6081,48 +6167,89 @@ export class DatabaseStorage implements IStorage {
   }
 
   async getCustomerById(customerId: number): Promise<any> {
+    const daysActiveExpression = sql<number | null>`
+      CASE
+        WHEN ${saasSubscriptions.currentPeriodStart} IS NOT NULL
+          AND ${saasSubscriptions.currentPeriodEnd} IS NOT NULL
+          AND ${saasSubscriptions.paymentStatus} = 'paid'
+          THEN GREATEST(
+            0,
+            FLOOR(
+              EXTRACT(
+                EPOCH FROM (${saasSubscriptions.currentPeriodEnd} - ${saasSubscriptions.currentPeriodStart})
+              ) / 86400
+            )
+          )
+        ELSE NULL
+      END
+    `;
+
     const [customer] = await db.select({
       id: organizations.id,
       name: organizations.name,
       brandName: organizations.brandName,
       subdomain: organizations.subdomain,
       subscriptionStatus: organizations.subscriptionStatus,
+      organizationPaymentStatus: organizations.paymentStatus,
       accessLevel: organizations.accessLevel,
       createdAt: organizations.createdAt,
       features: organizations.features,
-      adminEmail: sql<string>`(
-        SELECT email FROM ${users} 
-        WHERE ${users.organizationId} = ${organizations.id} 
-        AND ${users.role} = 'admin' 
-        LIMIT 1
-      )`.as('adminEmail'),
-      adminFirstName: sql<string>`(
-        SELECT first_name FROM ${users} 
-        WHERE ${users.organizationId} = ${organizations.id} 
-        AND ${users.role} = 'admin' 
-        LIMIT 1
-      )`.as('adminFirstName'),
-      adminLastName: sql<string>`(
-        SELECT last_name FROM ${users} 
-        WHERE ${users.organizationId} = ${organizations.id} 
-        AND ${users.role} = 'admin' 
-        LIMIT 1
-      )`.as('adminLastName'),
-      packageId: saasSubscriptions.packageId,
+      adminEmail: sql<string>`''`.as('adminEmail'),
+      adminFirstName: sql<string>`''`.as('adminFirstName'),
+      adminLastName: sql<string>`''`.as('adminLastName'),
       paymentStatus: saasSubscriptions.paymentStatus,
+      subscriptionPaymentStatus: saasSubscriptions.paymentStatus,
+      subscriptionStart: saasSubscriptions.currentPeriodStart,
+      subscriptionEnd: saasSubscriptions.currentPeriodEnd,
+      expiresAt: saasSubscriptions.expiresAt,
       details: saasSubscriptions.details,
-      expiresAt: saasSubscriptions.currentPeriodEnd,
+      maxUsers: saasSubscriptions.maxUsers,
+      maxPatients: saasSubscriptions.maxPatients,
+      packageId: saasPackages.id,
+      packageName: saasPackages.name,
+      packagePrice: saasPackages.price,
+      packageBillingCycle: saasPackages.billingCycle,
+      packageDescription: saasPackages.description,
+      packageFeatures: saasPackages.features,
+      packageIsActive: saasPackages.isActive,
+      packageShowOnWebsite: saasPackages.showOnWebsite,
+      daysActive: daysActiveExpression.as('daysActive'),
+      expiryAlertLevel: sql<string>`
+        CASE
+          WHEN ${saasSubscriptions.expiresAt} IS NULL THEN 'none'
+          WHEN ${saasSubscriptions.expiresAt} <= now() THEN 'expired'
+          WHEN ${saasSubscriptions.expiresAt} <= now() + interval '1 day' THEN 'due_1'
+          WHEN ${saasSubscriptions.expiresAt} <= now() + interval '7 day' THEN 'due_7'
+          ELSE 'none'
+        END
+      `.as('expiryAlertLevel'),
     })
     .from(organizations)
     .leftJoin(saasSubscriptions, eq(saasSubscriptions.organizationId, organizations.id))
-    .where(eq(organizations.id, customerId));
+    .leftJoin(saasPackages, eq(saasSubscriptions.packageId, saasPackages.id))
+    .where(eq(organizations.id, customerId))
+    .limit(1);
 
     if (!customer) {
       return null;
     }
 
+    const [admin] = await db
+      .select({
+        email: users.email,
+        firstName: users.firstName,
+        lastName: users.lastName,
+      })
+      .from(users)
+      .where(and(eq(users.organizationId, customerId), eq(users.role, 'admin')))
+      .orderBy(asc(users.id))
+      .limit(1);
+
     return {
       ...customer,
+      adminEmail: admin?.email || null,
+      adminFirstName: admin?.firstName || null,
+      adminLastName: admin?.lastName || null,
       billingPackageId: customer.packageId,
     };
   }
@@ -6224,6 +6351,7 @@ export class DatabaseStorage implements IStorage {
       paymentDate: saasPayments.paymentDate,
       dueDate: saasPayments.dueDate,
       description: saasPayments.description,
+      organizationEmail: organizations.email,
       metadata: saasPayments.metadata,
       createdAt: saasPayments.createdAt
     })
@@ -6238,6 +6366,7 @@ export class DatabaseStorage implements IStorage {
       query = query.where(
         or(
           ilike(organizations.name, `%${searchTerm}%`),
+          ilike(organizations.email, `%${searchTerm}%`),
           ilike(saasPayments.invoiceNumber, `%${searchTerm}%`),
           ilike(saasPayments.description, `%${searchTerm}%`)
         )
@@ -6250,6 +6379,135 @@ export class DatabaseStorage implements IStorage {
       invoices: results,
       total: results.length
     };
+  }
+
+  async getAllSaaSSubscriptions(): Promise<any[]> {
+    return await db.select({
+      id: saasSubscriptions.id,
+      organizationId: saasSubscriptions.organizationId,
+      organizationName: organizations.name,
+      packageName: saasPackages.name,
+      packageId: saasSubscriptions.packageId,
+      status: saasSubscriptions.status,
+      paymentStatus: saasSubscriptions.paymentStatus,
+      maxUsers: saasSubscriptions.maxUsers,
+      maxPatients: saasSubscriptions.maxPatients,
+      currentPeriodStart: saasSubscriptions.currentPeriodStart,
+      currentPeriodEnd: saasSubscriptions.currentPeriodEnd,
+      expiresAt: saasSubscriptions.expiresAt,
+      metadata: saasSubscriptions.metadata,
+      durationDays: sql<number | null>`
+        CASE
+          WHEN ${saasSubscriptions.currentPeriodStart} IS NOT NULL AND ${saasSubscriptions.currentPeriodEnd} IS NOT NULL
+            THEN GREATEST(
+              0,
+              FLOOR(
+                EXTRACT(EPOCH FROM (${saasSubscriptions.currentPeriodEnd} - ${saasSubscriptions.currentPeriodStart})) / 86400
+              )
+            )
+          ELSE NULL
+        END
+      `.as('durationDays'),
+      gracePeriodDays: sql<number | null>`
+        CASE
+          WHEN ${saasSubscriptions.expiresAt} IS NOT NULL AND ${saasSubscriptions.currentPeriodEnd} IS NOT NULL
+            THEN GREATEST(
+              0,
+              FLOOR(
+                EXTRACT(EPOCH FROM (${saasSubscriptions.expiresAt} - ${saasSubscriptions.currentPeriodEnd})) / 86400
+              )
+            )
+          ELSE NULL
+        END
+      `.as('gracePeriodDays'),
+      daysRemaining: sql<number | null>`
+        CASE
+          WHEN ${saasSubscriptions.expiresAt} IS NOT NULL
+            THEN LEAST(
+              GREATEST(
+                0,
+                CEIL(
+                  EXTRACT(EPOCH FROM (${saasSubscriptions.expiresAt} - now())) / 86400
+                )
+              ),
+              (
+                (CASE
+                  WHEN ${saasSubscriptions.currentPeriodStart} IS NOT NULL AND ${saasSubscriptions.currentPeriodEnd} IS NOT NULL
+                    THEN GREATEST(
+                      0,
+                      FLOOR(
+                        EXTRACT(EPOCH FROM (${saasSubscriptions.currentPeriodEnd} - ${saasSubscriptions.currentPeriodStart})) / 86400
+                      )
+                    )
+                  ELSE 0
+                END)
+                +
+                (CASE
+                  WHEN ${saasSubscriptions.expiresAt} IS NOT NULL AND ${saasSubscriptions.currentPeriodEnd} IS NOT NULL
+                    THEN GREATEST(
+                      0,
+                      FLOOR(
+                        EXTRACT(EPOCH FROM (${saasSubscriptions.expiresAt} - ${saasSubscriptions.currentPeriodEnd})) / 86400
+                      )
+                    )
+                  ELSE 0
+                END)
+              )
+            )
+          ELSE NULL
+        END
+      `.as('daysRemaining'),
+      details: saasSubscriptions.details,
+      createdAt: saasSubscriptions.createdAt,
+      updatedAt: saasSubscriptions.updatedAt,
+    })
+    .from(saasSubscriptions)
+    .leftJoin(organizations, eq(saasSubscriptions.organizationId, organizations.id))
+    .leftJoin(saasPackages, eq(saasSubscriptions.packageId, saasPackages.id))
+    .orderBy(desc(saasSubscriptions.createdAt));
+  }
+
+  async createSaaSSubscription(subscriptionData: InsertSaaSSubscription): Promise<any> {
+    const basePeriodEnd = subscriptionData.currentPeriodEnd || (() => {
+      const end = new Date();
+      end.setMonth(end.getMonth() + 1);
+      return end;
+    })();
+    const payload = {
+      ...subscriptionData,
+      currentPeriodStart: subscriptionData.currentPeriodStart || new Date(),
+      currentPeriodEnd: basePeriodEnd,
+      expiresAt: subscriptionData.expiresAt || addDays(basePeriodEnd, GRACE_PERIOD_DAYS),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    const [created] = await db.insert(saasSubscriptions).values(payload).returning();
+    return created;
+  }
+
+  async updateSaaSSubscription(subscriptionId: number, updates: Partial<InsertSaaSSubscription>): Promise<any> {
+    const [updated] = await db
+      .update(saasSubscriptions)
+      .set({
+        ...updates,
+        expiresAt: (() => {
+          if (updates.expiresAt) return updates.expiresAt;
+          if (updates.currentPeriodEnd) {
+            return addDays(new Date(updates.currentPeriodEnd), GRACE_PERIOD_DAYS);
+          }
+          return undefined;
+        })(),
+        updatedAt: new Date(),
+      })
+      .where(eq(saasSubscriptions.id, subscriptionId))
+      .returning();
+    return updated || null;
+  }
+
+  async deleteSaaSSubscription(subscriptionId: number): Promise<boolean> {
+    const result = await db.delete(saasSubscriptions).where(eq(saasSubscriptions.id, subscriptionId));
+    return result.rowCount > 0;
   }
 
   async getBillingStats(dateRange?: string): Promise<any> {
@@ -6351,7 +6609,9 @@ export class DatabaseStorage implements IStorage {
       paymentProvider: paymentData.paymentProvider,
       providerTransactionId: paymentData.providerTransactionId,
       description: paymentData.description,
-      metadata: paymentData.metadata || {}
+      metadata: paymentData.metadata || {},
+      createdAt: paymentData.createdAt,
+      updatedAt: paymentData.updatedAt || paymentData.createdAt,
     }).returning();
     
     return payment;
@@ -7844,6 +8104,13 @@ export class DatabaseStorage implements IStorage {
     const result = await db
       .delete(treatmentsInfo)
       .where(and(eq(treatmentsInfo.id, id), eq(treatmentsInfo.organizationId, organizationId)));
+    return result.rowCount > 0;
+  }
+
+  async deletePayment(paymentId: number): Promise<boolean> {
+    const result = await db
+      .delete(saasPayments)
+      .where(eq(saasPayments.id, paymentId));
     return result.rowCount > 0;
   }
 

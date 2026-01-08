@@ -100,8 +100,8 @@ export default function SaaSDashboard({ onLogout }: SaaSDashboardProps) {
       <Route path="/saas/users/create">
         <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
           {/* Header */}
-          <div className="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700 w-full">
+            <div className="w-full px-[200px]">
               <div className="flex justify-between items-center h-16">
                 <div className="flex items-center space-x-4">
                   <img 
@@ -140,8 +140,8 @@ export default function SaaSDashboard({ onLogout }: SaaSDashboardProps) {
       <Route>
         <div className="min-h-screen bg-gray-50 dark:bg-gray-900">
           {/* Header */}
-          <div className="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="bg-white dark:bg-gray-800 shadow-sm border-b border-gray-200 dark:border-gray-700 w-full">
+            <div className="w-full px-[200px]">
               <div className="flex justify-between items-center h-16">
                 <div className="flex items-center space-x-4">
                   <img 
@@ -174,215 +174,215 @@ export default function SaaSDashboard({ onLogout }: SaaSDashboardProps) {
           </div>
 
           {/* Main Content */}
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-5">
-            <TabsTrigger value="overview" className="flex items-center space-x-2">
-              <Activity className="h-4 w-4" />
-              <span>Overview</span>
-            </TabsTrigger>
-            <TabsTrigger value="customers" className="flex items-center space-x-2">
-              <Building2 className="h-4 w-4" />
-              <span>Organizations</span>
-            </TabsTrigger>
-            <TabsTrigger value="billing" className="flex items-center space-x-2">
-              <CreditCard className="h-4 w-4" />
-              <span>Billing</span>
-            </TabsTrigger>
-            <TabsTrigger value="packages" className="flex items-center space-x-2">
-              <Package className="h-4 w-4" />
-              <span>Packages</span>
-            </TabsTrigger>
-            <TabsTrigger value="settings" className="flex items-center space-x-2">
-              <Settings className="h-4 w-4" />
-              <span>Settings</span>
-            </TabsTrigger>
-          </TabsList>
+          <div className="w-full px-[200px] py-8">
+            <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6 w-full">
+              <TabsList className="grid w-full grid-cols-5 gap-4">
+                <TabsTrigger value="overview" className="flex items-center space-x-2">
+                  <Activity className="h-4 w-4" />
+                  <span>Overview</span>
+                </TabsTrigger>
+                <TabsTrigger value="customers" className="flex items-center space-x-2">
+                  <Building2 className="h-4 w-4" />
+                  <span>Organizations</span>
+                </TabsTrigger>
+                <TabsTrigger value="billing" className="flex items-center space-x-2">
+                  <CreditCard className="h-4 w-4" />
+                  <span>Billing</span>
+                </TabsTrigger>
+                <TabsTrigger value="packages" className="flex items-center space-x-2">
+                  <Package className="h-4 w-4" />
+                  <span>Packages</span>
+                </TabsTrigger>
+                <TabsTrigger value="settings" className="flex items-center space-x-2">
+                  <Settings className="h-4 w-4" />
+                  <span>Settings</span>
+                </TabsTrigger>
+              </TabsList>
 
-          <TabsContent value="overview" className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              <StatCard
-                title="Total Organizations"
-                value={stats?.totalCustomers || 0}
-                icon={Building2}
-                trend={false}
-                breakdown={stats?.customerStatusBreakdown}
-              />
-              <StatCard
-                title="Active Users"
-                value={stats?.activeUsers || 0}
-                icon={Users}
-                trend={false}
-              />
-              <StatCard
-                title="Monthly Revenue"
-                value={`£${stats?.monthlyRevenue || 0}`}
-                icon={CreditCard}
-                trend={false}
-              />
-              <StatCard
-                title="Active Packages"
-                value={stats?.activePackages || 0}
-                icon={Package}
-                trend={false}
-              />
-            </div>
+              <TabsContent value="overview" className="space-y-6">
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                  <StatCard
+                    title="Total Organizations"
+                    value={stats?.totalCustomers || 0}
+                    icon={Building2}
+                    trend={false}
+                    breakdown={stats?.customerStatusBreakdown}
+                  />
+                  <StatCard
+                    title="Active Users"
+                    value={stats?.activeUsers || 0}
+                    icon={Users}
+                    trend={false}
+                  />
+                  <StatCard
+                    title="Monthly Revenue"
+                    value={`£${stats?.monthlyRevenue || 0}`}
+                    icon={CreditCard}
+                    trend={false}
+                  />
+                  <StatCard
+                    title="Active Packages"
+                    value={stats?.activePackages || 0}
+                    icon={Package}
+                    trend={false}
+                  />
+                </div>
 
-            {/* Recent Activity and Alerts */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Recent Activity */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center space-x-2">
-                    <Activity className="h-5 w-5 text-blue-600" />
-                    <span>Recent Activity</span>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    {!activityData?.activities || activityData.activities.length === 0 ? (
-                      <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-                        No recent activity
-                      </div>
-                    ) : (
-                      <>
-                        {activityData.activities.map((activity: any) => (
-                          <div key={activity.id} className="flex items-center space-x-3 p-3 border border-gray-200 dark:border-gray-700 rounded-lg">
-                            <div className="flex-shrink-0">
-                              {activity.icon === 'building' ? (
-                                <Building2 className="h-5 w-5 text-blue-600" />
-                              ) : activity.icon === 'user' ? (
-                                <Users className="h-5 w-5 text-purple-600" />
-                              ) : (
-                                <CreditCard className="h-5 w-5 text-green-600" />
-                              )}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium text-gray-900 dark:text-white">
-                                {activity.title}
-                              </p>
-                              <p className="text-sm text-gray-500 dark:text-gray-400">
-                                {activity.description}
-                              </p>
-                              <p className="text-xs text-gray-400 dark:text-gray-500">
-                                {new Date(activity.timestamp).toLocaleDateString()} {new Date(activity.timestamp).toLocaleTimeString()}
-                              </p>
-                            </div>
+                {/* Recent Activity and Alerts */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {/* Recent Activity */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center space-x-2">
+                        <Activity className="h-5 w-5 text-blue-600" />
+                        <span>Recent Activity</span>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-4">
+                        {!activityData?.activities || activityData.activities.length === 0 ? (
+                          <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                            No recent activity
                           </div>
-                        ))}
-                        
-                        {/* Pagination Controls */}
-                        {activityData.totalPages > 1 && (
-                          <div className="flex items-center justify-between pt-4 border-t border-gray-200 dark:border-gray-700">
-                            <div className="text-sm text-gray-500 dark:text-gray-400">
-                              Showing {((activityPage - 1) * activityLimit) + 1} to {Math.min(activityPage * activityLimit, activityData.total)} of {activityData.total} activities
-                            </div>
-                            <div className="flex items-center space-x-2">
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setActivityPage(prev => Math.max(prev - 1, 1))}
-                                disabled={activityPage === 1}
-                              >
-                                Previous
-                              </Button>
-                              <span className="text-sm text-gray-600 dark:text-gray-400">
-                                Page {activityPage} of {activityData.totalPages}
-                              </span>
-                              <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => setActivityPage(prev => Math.min(prev + 1, activityData.totalPages))}
-                                disabled={activityPage === activityData.totalPages}
-                              >
-                                Next
-                              </Button>
-                            </div>
-                          </div>
+                        ) : (
+                          <>
+                            {activityData.activities.map((activity: any) => (
+                              <div key={activity.id} className="flex items-center space-x-3 p-3 border border-gray-200 dark:border-gray-700 rounded-lg">
+                                <div className="flex-shrink-0">
+                                  {activity.icon === 'building' ? (
+                                    <Building2 className="h-5 w-5 text-blue-600" />
+                                  ) : activity.icon === 'user' ? (
+                                    <Users className="h-5 w-5 text-purple-600" />
+                                  ) : (
+                                    <CreditCard className="h-5 w-5 text-green-600" />
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm font-medium text-gray-900 dark:text-white">
+                                    {activity.title}
+                                  </p>
+                                  <p className="text-sm text-gray-500 dark:text-gray-400">
+                                    {activity.description}
+                                  </p>
+                                  <p className="text-xs text-gray-400 dark:text-gray-500">
+                                    {new Date(activity.timestamp).toLocaleDateString()} {new Date(activity.timestamp).toLocaleTimeString()}
+                                  </p>
+                                </div>
+                              </div>
+                            ))}
+                            
+                            {/* Pagination Controls */}
+                            {activityData.totalPages > 1 && (
+                              <div className="flex items-center justify-between pt-4 border-t border-gray-200 dark:border-gray-700">
+                                <div className="text-sm text-gray-500 dark:text-gray-400">
+                                  Showing {((activityPage - 1) * activityLimit) + 1} to {Math.min(activityPage * activityLimit, activityData.total)} of {activityData.total} activities
+                                </div>
+                                <div className="flex items-center space-x-2">
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setActivityPage(prev => Math.max(prev - 1, 1))}
+                                    disabled={activityPage === 1}
+                                  >
+                                    Previous
+                                  </Button>
+                                  <span className="text-sm text-gray-600 dark:text-gray-400">
+                                    Page {activityPage} of {activityData.totalPages}
+                                  </span>
+                                  <Button
+                                    variant="outline"
+                                    size="sm"
+                                    onClick={() => setActivityPage(prev => Math.min(prev + 1, activityData.totalPages))}
+                                    disabled={activityPage === activityData.totalPages}
+                                  >
+                                    Next
+                                  </Button>
+                                </div>
+                              </div>
+                            )}
+                          </>
                         )}
-                      </>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* System Alerts */}
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center space-x-2">
-                    <AlertTriangle className="h-5 w-5 text-orange-600" />
-                    <span>System Alerts</span>
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-4">
-                    {!systemAlerts || systemAlerts.length === 0 ? (
-                      <div className="text-center py-8 text-gray-500 dark:text-gray-400">
-                        <CheckCircle className="h-8 w-8 mx-auto mb-2 text-green-500" />
-                        All systems operational
                       </div>
-                    ) : (
-                      systemAlerts.map((alert: any) => (
-                        <div key={alert.id} className={`p-3 border rounded-lg ${
-                          alert.type === 'error' ? 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800' :
-                          alert.type === 'warning' ? 'bg-orange-50 border-orange-200 dark:bg-orange-900/20 dark:border-orange-800' :
-                          'bg-blue-50 border-blue-200 dark:bg-blue-900/20 dark:border-blue-800'
-                        }`}>
-                          <div className="flex items-start space-x-3">
-                            <div className="flex-shrink-0">
-                              <AlertTriangle className={`h-5 w-5 ${
-                                alert.type === 'error' ? 'text-red-600' :
-                                alert.type === 'warning' ? 'text-orange-600' :
-                                'text-blue-600'
-                              }`} />
-                            </div>
-                            <div className="flex-1">
-                              <p className={`text-sm font-medium ${
-                                alert.type === 'error' ? 'text-red-900 dark:text-red-100' :
-                                alert.type === 'warning' ? 'text-orange-900 dark:text-orange-100' :
-                                'text-blue-900 dark:text-blue-100'
-                              }`}>
-                                {alert.title}
-                              </p>
-                              <p className={`text-sm ${
-                                alert.type === 'error' ? 'text-red-700 dark:text-red-200' :
-                                alert.type === 'warning' ? 'text-orange-700 dark:text-orange-200' :
-                                'text-blue-700 dark:text-blue-200'
-                              }`}>
-                                {alert.description}
-                              </p>
-                              {alert.actionRequired && (
-                                <Badge variant="outline" className="mt-2 text-xs">
-                                  Action Required
-                                </Badge>
-                              )}
-                            </div>
+                    </CardContent>
+                  </Card>
+
+                  {/* System Alerts */}
+                  <Card>
+                    <CardHeader>
+                      <CardTitle className="flex items-center space-x-2">
+                        <AlertTriangle className="h-5 w-5 text-orange-600" />
+                        <span>System Alerts</span>
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="space-y-4">
+                        {!systemAlerts || systemAlerts.length === 0 ? (
+                          <div className="text-center py-8 text-gray-500 dark:text-gray-400">
+                            <CheckCircle className="h-8 w-8 mx-auto mb-2 text-green-500" />
+                            All systems operational
                           </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          </TabsContent>
+                        ) : (
+                          systemAlerts.map((alert: any) => (
+                            <div key={alert.id} className={`p-3 border rounded-lg ${
+                              alert.type === 'error' ? 'bg-red-50 border-red-200 dark:bg-red-900/20 dark:border-red-800' :
+                              alert.type === 'warning' ? 'bg-orange-50 border-orange-200 dark:bg-orange-900/20 dark:border-orange-800' :
+                              'bg-blue-50 border-blue-200 dark:bg-blue-900/20 dark:border-blue-800'
+                            }`}>
+                              <div className="flex items-start space-x-3">
+                                <div className="flex-shrink-0">
+                                  <AlertTriangle className={`h-5 w-5 ${
+                                    alert.type === 'error' ? 'text-red-600' :
+                                    alert.type === 'warning' ? 'text-orange-600' :
+                                    'text-blue-600'
+                                  }`} />
+                                </div>
+                                <div className="flex-1">
+                                  <p className={`text-sm font-medium ${
+                                    alert.type === 'error' ? 'text-red-900 dark:text-red-100' :
+                                    alert.type === 'warning' ? 'text-orange-900 dark:text-orange-100' :
+                                    'text-blue-900 dark:text-blue-100'
+                                  }`}>
+                                    {alert.title}
+                                  </p>
+                                  <p className={`text-sm ${
+                                    alert.type === 'error' ? 'text-red-700 dark:text-red-200' :
+                                    alert.type === 'warning' ? 'text-orange-700 dark:text-orange-200' :
+                                    'text-blue-700 dark:text-blue-200'
+                                  }`}>
+                                    {alert.description}
+                                  </p>
+                                  {alert.actionRequired && (
+                                    <Badge variant="outline" className="mt-2 text-xs">
+                                      Action Required
+                                    </Badge>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              </TabsContent>
 
-          <TabsContent value="customers">
-            <SaaSCustomers />
-          </TabsContent>
+              <TabsContent value="customers">
+                <SaaSCustomers />
+              </TabsContent>
 
-          <TabsContent value="billing">
-            <SaaSBilling />
-          </TabsContent>
+              <TabsContent value="billing">
+                <SaaSBilling />
+              </TabsContent>
 
-          <TabsContent value="packages">
-            <SaaSPackages />
-          </TabsContent>
+              <TabsContent value="packages">
+                <SaaSPackages />
+              </TabsContent>
 
-          <TabsContent value="settings">
-            <SaaSSettings />
-          </TabsContent>
-        </Tabs>
+              <TabsContent value="settings">
+                <SaaSSettings />
+              </TabsContent>
+            </Tabs>
           </div>
         </div>
       </Route>

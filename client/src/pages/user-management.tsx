@@ -381,6 +381,40 @@ const DEPARTMENTS = [
   "Occupational Medicine"
 ];
 
+const passwordRequirementRules = [
+  {
+    test: (value: string) => value.length >= 8,
+    message: "Password must be at least 8 characters long",
+  },
+  {
+    test: (value: string) => /[A-Z]/.test(value),
+    message: "Password must include at least one uppercase letter",
+  },
+  {
+    test: (value: string) => /[a-z]/.test(value),
+    message: "Password must include at least one lowercase letter",
+  },
+  {
+    test: (value: string) => /[0-9]/.test(value),
+    message: "Password must include at least one number",
+  },
+  {
+    test: (value: string) => /[!@#$%^&*()_\-+={}[\]|\\:;"'<>,.?/~`]/.test(value),
+    message: "Password must include at least one special character",
+  },
+];
+
+const validatePasswordValue = (value: string, ctx: z.RefinementCtx) => {
+  passwordRequirementRules.forEach((rule) => {
+    if (!rule.test(value)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: rule.message,
+      });
+    }
+  });
+};
+
 const userSchema = z.object({
   email: z.string().min(1, "Email address is required").email("Please enter a valid email address"),
   firstName: z.string().min(2, "First name must be at least 2 characters").max(30, "First name must not exceed 30 characters"),
@@ -394,7 +428,10 @@ const userSchema = z.object({
     start: z.string().optional(),
     end: z.string().optional(),
   }).optional(),
-  password: z.string().optional(),
+  password: z.string().optional().superRefine((value, ctx) => {
+    if (!value) return;
+    validatePasswordValue(value, ctx);
+  }),
   // Patient-specific fields
   dateOfBirth: z.string().optional(),
   dobDay: z.string().optional(),
@@ -491,6 +528,54 @@ const createEmptyFieldPermission = (): FieldPermission => ({
   view: false,
   edit: false,
 });
+
+const MODULE_PERMISSIONS_LIST = [
+  { key: 'dashboard', name: 'Dashboard', description: 'Access main dashboard' },
+  { key: 'patients', name: 'Patients', description: 'Manage patient records and information' },
+  { key: 'appointments', name: 'Appointments', description: 'Schedule and manage appointments' },
+  { key: 'prescriptions', name: 'Prescriptions', description: 'Prescribe and manage medications' },
+  { key: 'labResults', name: 'Lab Results', description: 'Manage laboratory results' },
+  { key: 'medicalImaging', name: 'Imaging', description: 'View and manage medical images' },
+  { key: 'forms', name: 'Forms', description: 'Create and manage forms' },
+  { key: 'messaging', name: 'Messaging', description: 'Send messages and notifications' },
+  { key: 'analytics', name: 'Analytics', description: 'View reports and analytics' },
+  { key: 'clinicalDecision', name: 'Clinical Decision Support', description: 'AI-powered clinical decision assistance' },
+  { key: 'symptomChecker', name: 'Symptom Checker', description: 'Patient symptom assessment tool' },
+  { key: 'telemedicine', name: 'Telemedicine', description: 'Video consultations' },
+  { key: 'voiceDocumentation', name: 'Voice Documentation', description: 'Voice-to-text documentation' },
+  { key: 'financialIntelligence', name: 'Financial Intelligence', description: 'Financial analytics and insights' },
+  { key: 'billing', name: 'Billing', description: 'Process payments and invoicing' },
+  { key: 'quickbooks', name: 'QuickBooks', description: 'QuickBooks accounting integration' },
+  { key: 'inventory', name: 'Inventory', description: 'Manage medical inventory' },
+  { key: 'medicalRecords', name: 'Medical Records', description: 'Create and view medical records' },
+  { key: 'integrations', name: 'Integrations', description: 'Connect external services' },
+  { key: 'gdprCompliance', name: 'GDPR Compliance', description: 'Data privacy and compliance' },
+  { key: 'userManagement', name: 'User Management', description: 'Manage system users and roles' },
+  { key: 'shiftManagement', name: 'Shift Management', description: 'Manage staff shifts and schedules' },
+  { key: 'settings', name: 'Settings', description: 'Configure system settings' },
+  { key: 'subscription', name: 'Subscription', description: 'Manage subscription and packages' }
+] as const;
+
+const MODULE_ACTIONS = ['view', 'create', 'edit', 'delete'] as const;
+type ModuleAction = (typeof MODULE_ACTIONS)[number];
+
+const isActionFullyEnabled = (modulesData: Record<string, ModulePermission>, action: ModuleAction) => {
+  return MODULE_PERMISSIONS_LIST.every((module) => modulesData[module.key]?.[action]);
+};
+
+const toggleActionForAllModules = (
+  roleForm: ReturnType<typeof useForm<RoleFormData>>,
+  action: ModuleAction,
+  enable: boolean
+) => {
+  MODULE_PERMISSIONS_LIST.forEach((module) => {
+    const existing = roleForm.getValues(`permissions.modules.${module.key}`) || createEmptyModulePermission();
+    roleForm.setValue(`permissions.modules.${module.key}`, { ...existing, [action]: enable }, {
+      shouldValidate: false,
+      shouldDirty: true,
+    });
+  });
+};
 
 const getDefaultModulePermissions = (): Record<string, ModulePermission> =>
   MODULE_KEYS.reduce<Record<string, ModulePermission>>((acc, moduleKey) => {
@@ -1507,6 +1592,41 @@ export default function UserManagement() {
     },
   });
 
+  const resetCreateUserFormState = () => {
+    setEditingUser(null);
+    form.reset();
+    setSelectedRole("doctor");
+    setSelectedSpecialtyCategory("");
+    setSelectedSubSpecialty("");
+    setSelectedSpecificArea("");
+    setSelectedLabTechSubcategory("");
+    setSelectedPharmacistSubcategory("");
+    setSelectedOpticianSubcategory("");
+    setSelectedParamedicSubcategory("");
+    setSelectedPhysiotherapistSubcategory("");
+    setSelectedAestheticianSubcategory("");
+    setSelectedSampleTakerSubcategory("");
+    setDobDay("");
+    setDobMonth("");
+    setDobYear("");
+    setDobErrors({});
+    setSelectedPlanType("");
+    setPlanTypeOpen(false);
+    setInsuranceProvider("");
+    setNhsNumberError("");
+    setPostcodeLookupMessage("");
+    setLookupAddresses([]);
+    setSelectedAddressDetails(null);
+    setSelectedPhoneCountryCode("+44");
+    setSelectedEmergencyPhoneCountryCode("+44");
+    setShowPassword(false);
+    setEmailValidationStatus('idle');
+    if (emailCheckTimeout) {
+      clearTimeout(emailCheckTimeout);
+      setEmailCheckTimeout(null);
+    }
+  };
+
   const currentCountry = form.watch("address.country");
   const currentPostcodeValue = form.watch("address.postcode");
 
@@ -1647,6 +1767,8 @@ export default function UserManagement() {
     });
     setIsRoleModalOpen(true);
   };
+
+  const modulePermissionValues = roleForm.watch("permissions.modules") || {};
 
   // Fetch roles with explicit authentication
   const { data: roles = [], isLoading: rolesLoading, error: rolesError } = useQuery({
@@ -2687,25 +2809,14 @@ export default function UserManagement() {
               </Button>
             </div>
             
-            <Button 
-              onClick={() => {
-                setIsCreateModalOpen(true);
-                setEmailValidationStatus('idle');
-                if (emailCheckTimeout) {
-                  clearTimeout(emailCheckTimeout);
-                }
-                // Reset DOB state for new user
-                setDobDay("");
-                setDobMonth("");
-                setDobYear("");
-                setDobErrors({});
-                // Reset Insurance Provider and NHS Number state
-                setInsuranceProvider("");
-                setNhsNumberError("");
-              }} 
-              variant="default" 
-              className="flex items-center gap-2 bg-gray-800 text-white hover:bg-gray-700"
-            >
+              <Button 
+                onClick={() => {
+                  resetCreateUserFormState();
+                  setIsCreateModalOpen(true);
+                }} 
+                variant="default" 
+                className="flex items-center gap-2 bg-gray-800 text-white hover:bg-gray-700"
+              >
               <UserPlus className="h-4 w-4" />
               Add New User
             </Button>
@@ -2720,29 +2831,12 @@ export default function UserManagement() {
           </div>
         </div>
           
-        <Dialog open={isCreateModalOpen || !!editingUser} onOpenChange={(open) => {
-            if (!open) {
-              setIsCreateModalOpen(false);
-              setEditingUser(null);
-              setSelectedRole("doctor");
-              form.reset();
-              setEmailValidationStatus('idle');
-              if (emailCheckTimeout) {
-                clearTimeout(emailCheckTimeout);
+          <Dialog open={isCreateModalOpen || !!editingUser} onOpenChange={(open) => {
+              if (!open) {
+                setIsCreateModalOpen(false);
+                resetCreateUserFormState();
               }
-              // Reset DOB state when closing modal
-              setDobDay("");
-              setDobMonth("");
-              setDobYear("");
-              setDobErrors({});
-              // Reset Plan Type state when closing modal
-              setSelectedPlanType("");
-              setPlanTypeOpen(false);
-              // Reset Insurance Provider and NHS Number state
-              setInsuranceProvider("");
-              setNhsNumberError("");
-            }
-          }}>
+            }}>
             <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
               <DialogHeader>
                 <DialogTitle>
@@ -4803,39 +4897,27 @@ export default function UserManagement() {
                           {/* Permission Matrix Headers */}
                           <div className="grid grid-cols-5 gap-2 text-sm font-medium text-gray-700 dark:text-gray-300 pb-2 border-b border-gray-200 dark:border-gray-600">
                             <div>Module</div>
-                            <div className="text-center">View</div>
-                            <div className="text-center">Create</div>
-                            <div className="text-center">Edit</div>
-                            <div className="text-center">Delete</div>
+                            {MODULE_ACTIONS.map((action) => {
+                              const isChecked = isActionFullyEnabled(modulePermissionValues, action);
+                              const label = action.charAt(0).toUpperCase() + action.slice(1);
+                              return (
+                                <div key={action} className="text-center">
+                                  <label className="inline-flex flex-col items-center text-xs uppercase tracking-wide cursor-pointer select-none">
+                                    <span className="font-semibold">{label}</span>
+                                    <input
+                                      type="checkbox"
+                                      checked={isChecked}
+                                      onChange={(e) => toggleActionForAllModules(roleForm, action, e.target.checked)}
+                                      className="mt-1 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+                                    />
+                                  </label>
+                                </div>
+                              );
+                            })}
                           </div>
 
                           {/* Module Permissions */}
-                          {[
-                            { key: 'dashboard', name: 'Dashboard', description: 'Access main dashboard' },
-                            { key: 'patients', name: 'Patients', description: 'Manage patient records and information' },
-                            { key: 'appointments', name: 'Appointments', description: 'Schedule and manage appointments' },
-                            { key: 'prescriptions', name: 'Prescriptions', description: 'Prescribe and manage medications' },
-                            { key: 'labResults', name: 'Lab Results', description: 'Manage laboratory results' },
-                            { key: 'medicalImaging', name: 'Imaging', description: 'View and manage medical images' },
-                            { key: 'forms', name: 'Forms', description: 'Create and manage forms' },
-                            { key: 'messaging', name: 'Messaging', description: 'Send messages and notifications' },
-                            { key: 'analytics', name: 'Analytics', description: 'View reports and analytics' },
-                            { key: 'clinicalDecision', name: 'Clinical Decision Support', description: 'AI-powered clinical decision assistance' },
-                            { key: 'symptomChecker', name: 'Symptom Checker', description: 'Patient symptom assessment tool' },
-                            { key: 'telemedicine', name: 'Telemedicine', description: 'Video consultations' },
-                            { key: 'voiceDocumentation', name: 'Voice Documentation', description: 'Voice-to-text documentation' },
-                            { key: 'financialIntelligence', name: 'Financial Intelligence', description: 'Financial analytics and insights' },
-                            { key: 'billing', name: 'Billing', description: 'Process payments and invoicing' },
-                            { key: 'quickbooks', name: 'QuickBooks', description: 'QuickBooks accounting integration' },
-                            { key: 'inventory', name: 'Inventory', description: 'Manage medical inventory' },
-                            { key: 'medicalRecords', name: 'Medical Records', description: 'Create and view medical records' },
-                            { key: 'integrations', name: 'Integrations', description: 'Connect external services' },
-                            { key: 'gdprCompliance', name: 'GDPR Compliance', description: 'Data privacy and compliance' },
-                            { key: 'userManagement', name: 'User Management', description: 'Manage system users and roles' },
-                            { key: 'shiftManagement', name: 'Shift Management', description: 'Manage staff shifts and schedules' },
-                            { key: 'settings', name: 'Settings', description: 'Configure system settings' },
-                            { key: 'subscription', name: 'Subscription', description: 'Manage subscription and packages' }
-                          ].map((module) => {
+                          {MODULE_PERMISSIONS_LIST.map((module) => {
                             const currentPerms = (roleForm.watch(`permissions.modules.${module.key}`) as ModulePermission | undefined) ?? createEmptyModulePermission();
                             
                             return (
@@ -4845,7 +4927,7 @@ export default function UserManagement() {
                                   <div className="text-xs text-gray-500 dark:text-gray-400">{module.description}</div>
                                 </div>
                                 
-                                {(['view', 'create', 'edit', 'delete'] as const).map((action) => (
+                                {MODULE_ACTIONS.map((action) => (
                                   <div key={action} className="flex justify-center">
                                     <input
                                       type="checkbox"

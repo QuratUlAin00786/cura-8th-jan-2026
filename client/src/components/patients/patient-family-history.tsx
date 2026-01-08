@@ -45,6 +45,8 @@ import {
   Check,
   ChevronsUpDown,
   X,
+  CheckCircle,
+  FileText,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -52,9 +54,20 @@ import { apiRequest } from "@/lib/queryClient";
 import { cn } from "@/lib/utils";
 import type { Patient } from "@/types";
 
+interface AnatomicalFile {
+  filename: string;
+  url: string;
+  uploadedAt: string;
+  size: number;
+}
+
 interface PatientFamilyHistoryProps {
   patient: Patient;
   onUpdate: (updates: Partial<Patient>) => void;
+  anatomicalFiles?: AnatomicalFile[];
+  anatomicalFilesLoading?: boolean;
+  anatomicalFilesError?: string;
+  onDeleteAnatomicalFile?: (filename: string) => Promise<boolean>;
 }
 
 interface FamilyCondition {
@@ -490,6 +503,10 @@ const predefinedMaritalStatuses = [
 export default function PatientFamilyHistory({
   patient,
   onUpdate,
+  anatomicalFiles = [],
+  anatomicalFilesLoading = false,
+  anatomicalFilesError = "",
+  onDeleteAnatomicalFile,
 }: PatientFamilyHistoryProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -519,6 +536,7 @@ export default function PatientFamilyHistory({
   const [allergySearchQuery, setAllergySearchQuery] = useState("");
   const [newChronicCondition, setNewChronicCondition] = useState("");
   const [chronicConditionOptions, setChronicConditionOptions] = useState<string[]>(predefinedChronicConditions);
+  const [deletingFile, setDeletingFile] = useState<string | null>(null);
   const [openConditionCombobox, setOpenConditionCombobox] = useState(false);
   const [conditionSearchQuery, setConditionSearchQuery] = useState("");
   const [educationOptions, setEducationOptions] = useState<string[]>(predefinedEducationLevels);
@@ -2211,10 +2229,11 @@ export default function PatientFamilyHistory({
       </CardHeader>
       <CardContent>
         <Tabs defaultValue="overview" className="w-full">
-          <TabsList>
+          <TabsList className="grid grid-cols-2 md:grid-cols-4 gap-2">
             <TabsTrigger value="family">Family History</TabsTrigger>
             <TabsTrigger value="social">Social History</TabsTrigger>
             <TabsTrigger value="immunizations">Immunizations</TabsTrigger>
+            <TabsTrigger value="anatomical">Anatomical analysis uploads</TabsTrigger>
           </TabsList>
 
           <TabsContent value="family" className="space-y-4">
@@ -2310,6 +2329,108 @@ export default function PatientFamilyHistory({
                   </div>
                 ))}
               </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="anatomical" className="space-y-4">
+            <div className="text-sm text-gray-500 dark:text-gray-400">
+              Anatomical analysis uploads
+            </div>
+            {anatomicalFilesError && (
+              <div className="flex items-center gap-2 text-sm font-medium text-destructive">
+                <AlertTriangle className="h-4 w-4" />
+                Failed to load anatomical analysis files.
+              </div>
+            )}
+            {anatomicalFilesLoading ? (
+              <p className="text-sm text-gray-500 dark:text-gray-400">Checking for uploads…</p>
+            ) : anatomicalFiles.length > 0 ? (
+              <div className="grid gap-4 grid-cols-1 md:grid-cols-2">
+                {anatomicalFiles.map((file) => (
+                  <div
+                    key={file.filename}
+                    className="border rounded-xl border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-[#0b0c16] p-4 space-y-3 flex flex-col"
+                  >
+                    <div className="h-36 rounded-lg overflow-hidden bg-black flex items-center justify-center">
+                      {file.filename.toLowerCase().endsWith(".pdf") ? (
+                        <div className="flex flex-col items-center gap-2 text-sm text-white">
+                          <FileText className="h-8 w-8" />
+                          <span className="text-xs uppercase tracking-wide">PDF</span>
+                        </div>
+                      ) : (
+                        <img
+                          src={file.url}
+                          alt={file.filename}
+                          className="h-full w-full object-cover"
+                        />
+                      )}
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-sm font-medium text-gray-900 dark:text-white">
+                        {file.filename}
+                      </p>
+                      <p className="text-xs text-gray-500 dark:text-gray-400">
+                        Uploaded {new Date(file.uploadedAt).toLocaleString()}
+                      </p>
+                      <div className="flex items-center gap-2 text-xs">
+                        <a
+                          target="_blank"
+                          rel="noreferrer"
+                          href={file.url}
+                          className="text-[hsl(var(--cura-bluewave))] hover:underline"
+                        >
+                          View full-size
+                        </a>
+                        <span className="text-gray-400">·</span>
+                        <span className="text-gray-500 dark:text-gray-400">
+                          {(file.size / 1024).toFixed(1)} KB
+                        </span>
+                      </div>
+                    </div>
+                    <div className="mt-auto flex items-center justify-between gap-3 text-xs">
+                      <p className="text-gray-500 dark:text-gray-400">
+                        {new Date(file.uploadedAt).toLocaleString()}
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        className="flex items-center gap-1 px-3 py-1.5 rounded-full"
+                        onClick={async () => {
+                          if (!onDeleteAnatomicalFile) return;
+                          setDeletingFile(file.filename);
+                          try {
+                            const success = await onDeleteAnatomicalFile(file.filename);
+                            if (success) {
+                              toast({
+                                title: "File deleted",
+                                description: `${file.filename} removed`,
+                                variant: "success",
+                                icon: <CheckCircle className="h-4 w-4 text-green-600" />,
+                              });
+                            } else {
+                              toast({
+                                title: "Delete failed",
+                                description: `Unable to delete ${file.filename}`,
+                                variant: "destructive",
+                              });
+                            }
+                          } finally {
+                            setDeletingFile(null);
+                          }
+                        }}
+                        disabled={deletingFile === file.filename}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                No anatomical analysis exists for this patient.
+              </p>
             )}
           </TabsContent>
         </Tabs>

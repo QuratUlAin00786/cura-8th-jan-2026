@@ -9,7 +9,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Calendar, Clock, Users, CalendarCheck, ChevronLeft, ChevronRight, UserCheck, Trash2, Edit, Settings, Plus, Check, ChevronsUpDown } from "lucide-react";
+import { Calendar, Clock, Users, CalendarCheck, ChevronLeft, ChevronRight, UserCheck, Trash2, Edit, Settings, Plus, Check, ChevronsUpDown, CheckCircle } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/use-auth";
 import { isDoctorLike } from "@/lib/role-utils";
@@ -37,6 +37,8 @@ export default function ShiftsPage() {
   const [pendingShifts, setPendingShifts] = useState<Array<{startTime: string, endTime: string}>>([]);
   // Conflict modal state
   const [showConflictModal, setShowConflictModal] = useState(false);
+  const [shiftSummaryList, setShiftSummaryList] = useState<string[]>([]);
+  const [disabledSlots, setDisabledSlots] = useState<number[]>([]);
   const [conflictingShifts, setConflictingShifts] = useState<any[]>([]);
   // Update modal state
   const [showUpdateModal, setShowUpdateModal] = useState(false);
@@ -58,6 +60,38 @@ export default function ShiftsPage() {
   
   // Compute isDoctor before any hooks that reference it
   const isDoctor = isDoctorLike(user?.role);
+
+  const slotFromTime = (time: string): number => parseInt(time.replace(":", ""));
+
+  const extractSlotRange = (shift: { startTime: string; endTime: string }) => {
+    const start = slotFromTime(shift.startTime);
+    const end = slotFromTime(shift.endTime);
+    const range: number[] = [];
+    for (let value = start; value <= end; value += 100) {
+      range.push(value);
+    }
+    return range;
+  };
+
+  const slotValueFromTime = (time: string): number => parseInt(time.replace(":", ""));
+  const generateSlotRange = (startValue: number, endValue: number) => {
+    const range: number[] = [];
+    for (let value = startValue; value <= endValue; value += 100) {
+      range.push(value);
+    }
+    return range;
+  };
+
+  const getShiftDisabledSlots = (shiftList: any[]) => {
+    const disabled: number[] = [];
+    shiftList.forEach((shift: any) => {
+      if (!shift.startTime || !shift.endTime) return;
+      const start = slotValueFromTime(shift.startTime);
+      const end = slotValueFromTime(shift.endTime);
+      disabled.push(...generateSlotRange(start, end));
+    });
+    return Array.from(new Set(disabled));
+  };
 
   // Pre-select time slots from 10:00 AM to 3:00 PM only once on initial load
   useEffect(() => {
@@ -85,6 +119,7 @@ export default function ShiftsPage() {
       setIsSelectingRange(false);
       setPendingShifts([]);
     }
+    setDisabledSlots([]);
   }, [selectedStaffId]);
 
   // Clear time slot selections when date changes to prevent cross-date confusion
@@ -95,6 +130,7 @@ export default function ShiftsPage() {
     setSelectedEndTime("");
     setIsSelectingRange(false);
     setPendingShifts([]);
+    setDisabledSlots([]);
   }, [selectedDate]);
 
   // Refetch shifts when availability modal date changes
@@ -366,6 +402,11 @@ export default function ShiftsPage() {
       }
     },
   });
+
+  useEffect(() => {
+    const disabled = getShiftDisabledSlots(shifts);
+    setDisabledSlots(disabled);
+  }, [shifts]);
 
   // Check if a date has shifts for the selected staff member
   const hasShiftsOnDate = (date: Date): boolean => {
@@ -653,16 +694,16 @@ export default function ShiftsPage() {
         range.push(i);
       }
       
-      // Add 100 to get the actual end time (end of the selected hour)
-      const actualEndValue = slotValue + 100;
-      const endTimeSlot = `${Math.floor(actualEndValue / 100).toString().padStart(2, '0')}:00`;
+      // Use the selected slot as the actual end time (end exclusive)
+      const endTimeSlot = `${Math.floor(slotValue / 100).toString().padStart(2, '0')}:00`;
       setSelectedEndTime(endTimeSlot);
       setSelectedTimeSlots(range);
       
       // Add to pending shifts instead of creating immediately
       setPendingShifts(prev => [...prev, { startTime: selectedStartTime, endTime: endTimeSlot }]);
       
-      setSuccessMessage(`${selectedStartTime} - ${endTimeSlot} added to pending shifts. Click "Create Shift" to save.`);
+      const rangeStart = `${Math.floor(startValue / 100).toString().padStart(2, '0')}:00`;
+      setSuccessMessage(`${rangeStart} - ${endTimeSlot} added to pending shifts. Click "Create Shift" to save.`);
       setShowSuccessModal(true);
       
       // Reset for next selection
@@ -862,9 +903,13 @@ export default function ShiftsPage() {
         setShowSuccessModal(true);
       }
 
+      const newDisabledSlots = uniquePendingShifts.flatMap(extractSlotRange);
+      setDisabledSlots((prev) => Array.from(new Set([...prev, ...newDisabledSlots])));
+      setShiftSummaryList(uniquePendingShifts.map((shift) => `${shift.startTime} - ${shift.endTime}`));
+
       // Clear pending shifts and refresh
-      setPendingShifts([]);
-      setSelectedTimeSlots([]);
+    setPendingShifts([]);
+    setSelectedTimeSlots([]);
       await queryClient.invalidateQueries({ queryKey: ["/api/shifts"] });
       await refetchShifts();
     } catch (error) {
@@ -1334,6 +1379,8 @@ export default function ShiftsPage() {
                   
                   // Check if this time slot is selected
                   const isSelected = selectedTimeSlots.includes(slot.value);
+                  const isDisabledSlot = disabledSlots.includes(slot.value);
+                  const slotDisabled = hasShift || isDisabledSlot;
                   
 
                   
@@ -1341,12 +1388,12 @@ export default function ShiftsPage() {
                     <Button
                       key={slot.value}
                       variant="outline"
-                      disabled={hasShift}
+                      disabled={slotDisabled}
                       className={`
                         h-12 justify-center font-medium transition-all text-sm
                         ${isSelected
                           ? 'bg-gradient-to-r from-green-400 to-emerald-500 text-white border-green-400 hover:from-green-500 hover:to-emerald-600 cursor-pointer'
-                          : hasShift
+                          : slotDisabled
                           ? 'bg-gray-400 text-gray-100 border-gray-400 cursor-not-allowed opacity-75'
                           : 'bg-gradient-to-r from-blue-400 to-cyan-400 text-white border-blue-400 hover:from-blue-500 hover:to-cyan-500 cursor-pointer'
                         }
@@ -2014,8 +2061,7 @@ export default function ShiftsPage() {
                   onClick={() => {
                     setShowConflictModal(false);
                     setConflictingShifts([]);
-                    setPendingShifts([]);
-                    setSelectedTimeSlots([]);
+    setPendingShifts([]);
                   }}
                 >
                   Close and Select Another Time
@@ -2179,11 +2225,24 @@ export default function ShiftsPage() {
       <Dialog open={showSuccessModal} onOpenChange={setShowSuccessModal}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="text-xl font-bold text-green-600">Success</DialogTitle>
+            <DialogTitle className="text-xl font-bold text-green-600">Shift details</DialogTitle>
           </DialogHeader>
           
-          <div className="py-4">
-            <p className="text-gray-700 dark:text-gray-300">{successMessage}</p>
+          <div className="py-4 space-y-3">
+            <div className="flex items-center gap-2 text-green-600">
+              <CheckCircle className="h-6 w-6" />
+              <p className="text-lg font-semibold">Shift saved successfully</p>
+            </div>
+            {shiftSummaryList.length > 0 && (
+              <ul className="list-disc list-inside text-sm text-gray-700 dark:text-gray-300 space-y-1">
+                {shiftSummaryList.map((summary) => (
+                  <li key={summary}>{summary}</li>
+                ))}
+              </ul>
+            )}
+            {shiftSummaryList.length === 0 && (
+              <p className="text-gray-700 dark:text-gray-300">{successMessage}</p>
+            )}
           </div>
 
           <div className="flex justify-end">
@@ -2191,6 +2250,7 @@ export default function ShiftsPage() {
               onClick={() => {
                 setShowSuccessModal(false);
                 setSuccessMessage("");
+                setShiftSummaryList([]);
               }}
             >
               OK

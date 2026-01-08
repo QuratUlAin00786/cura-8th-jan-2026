@@ -39,6 +39,7 @@ import { useTenant } from "@/hooks/use-tenant";
 import { getActiveSubdomain } from "@/lib/subdomain-utils";
 import { useAuth } from "@/hooks/use-auth";
 import { useRolePermissions, UserRole } from "@/hooks/use-role-permissions";
+import { isDoctorLike } from "@/lib/role-utils";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { Avatar, AvatarContent, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -99,12 +100,6 @@ const ALL_NAVIGATION = [
     module: "analytics",
   },
   { name: "Automation", href: "/automation", icon: Zap, module: "automation" },
-  {
-    name: "Patient Portal",
-    href: "/patient-portal",
-    icon: Globe,
-    module: "patient_portal",
-  },
   {
     name: "Clinical Decision Support",
     href: "/clinical-decision-support",
@@ -241,7 +236,12 @@ export function Sidebar() {
     return canAccess(item.module);
   });
 
+  const isDoctorUser = user && isDoctorLike(user.role);
+
   const filteredAdminNavigation = ADMIN_NAVIGATION.filter((item) => {
+    if (item.module === "user_management" && isDoctorUser) {
+      return false;
+    }
     // Admin has full access to everything
     if (currentRole === "admin") {
       return true;

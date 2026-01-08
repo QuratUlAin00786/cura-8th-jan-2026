@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest } from "@/lib/queryClient";
+import { Trash } from "lucide-react";
 
 export type FieldType = "text" | "textarea" | "number" | "email" | "date" | "checkbox" | "radio";
 
@@ -247,50 +248,57 @@ export function FormBuilder({ loadForm, onLoadComplete }: FormBuilderProps = {})
               </div>
               <div className="space-y-3">
                 {section.fields.map((field) => (
-                  <div key={field.id} className="grid gap-2 md:grid-cols-4 items-end">
-                    <div className="md:col-span-2 space-y-1">
-                      <Label>Label</Label>
-                      <Input
-                        value={field.label}
-                        onChange={(event) => updateField(section.id, field.id, { label: event.target.value })}
-                        placeholder="Field label"
-                      />
-                    </div>
-                    <div>
-                      <Label>Type</Label>
-                      <Select
-                        value={field.type}
-                        onValueChange={(value) =>
-                          updateField(section.id, field.id, { type: value as FieldType })
-                        }
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Choose type" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {fieldTypeOptions.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>
-                              {option.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <div>
-                      <Label>Required</Label>
-                      <Switch
-                        checked={field.required}
-                        onCheckedChange={(checked) => updateField(section.id, field.id, { required: checked })}
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1">
-                      <Label>Actions</Label>
-                      <Button size="sm" variant="ghost" onClick={() => removeField(section.id, field.id)}>
-                        Remove
-                      </Button>
+                  <div key={field.id} className="space-y-2">
+                    <div className="flex flex-wrap items-end gap-3">
+                      <div className="flex-1 min-w-[210px] space-y-1">
+                        <Label>Label</Label>
+                        <Input
+                          value={field.label}
+                          onChange={(event) => updateField(section.id, field.id, { label: event.target.value })}
+                          placeholder="Field label"
+                        />
+                      </div>
+                      <div className="w-full max-w-[260px] min-w-[180px] space-y-1">
+                        <Label>Type</Label>
+                        <Select
+                          value={field.type}
+                          onValueChange={(value) =>
+                            updateField(section.id, field.id, { type: value as FieldType })
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Choose type" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {fieldTypeOptions.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="min-w-[120px] w-full max-w-[140px] space-y-1">
+                        <Label>Required</Label>
+                        <Switch
+                          checked={field.required}
+                          onCheckedChange={(checked) => updateField(section.id, field.id, { required: checked })}
+                        />
+                      </div>
+                      <div className="min-w-[0px] flex items-start">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => removeField(section.id, field.id)}
+                          className="px-2.5 py-1 text-xs bg-gray-100 text-red-600 hover:bg-gray-200"
+                          aria-label="Remove field"
+                        >
+                          <Trash className="h-4 w-4" />
+                        </Button>
+                      </div>
                     </div>
                     {(field.type === "checkbox" || field.type === "radio") && (
-                      <div className="md:col-span-4 space-y-1">
+                      <div className="space-y-1">
                         <Label>Options (comma separated)</Label>
                         <Textarea
                           rows={2}

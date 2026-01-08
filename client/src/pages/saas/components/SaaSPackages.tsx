@@ -31,6 +31,7 @@ import {
 export default function SaaSPackages() {
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false);
   const [editingPackage, setEditingPackage] = useState<any>(null);
+  const [editingPackageId, setEditingPackageId] = useState<number | null>(null);
   const [showSuccessModal, setShowSuccessModal] = useState(false);
   const [successMessage, setSuccessMessage] = useState("");
   const { toast } = useToast();
@@ -69,6 +70,7 @@ export default function SaaSPackages() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['/api/saas/packages'] });
       setEditingPackage(null);
+      setEditingPackageId(null);
       setSuccessMessage("Package updated successfully");
       setShowSuccessModal(true);
     },
@@ -166,18 +168,22 @@ export default function SaaSPackages() {
         </div>
 
         <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <Label htmlFor="billingCycle">Billing Cycle</Label>
-            <select
-              id="billingCycle"
-              value={formData.billingCycle}
-              onChange={(e) => setFormData({ ...formData, billingCycle: e.target.value })}
-              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-            >
-              <option value="monthly">Monthly</option>
-              <option value="yearly">Yearly</option>
-            </select>
-          </div>
+            <div className="space-y-2">
+              <Label htmlFor="billingCycle">Billing Cycle</Label>
+              <select
+                id="billingCycle"
+                value={formData.billingCycle}
+                onChange={(e) => setFormData({ ...formData, billingCycle: e.target.value })}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="monthly">Monthly</option>
+                <option value="quarterly">Quarterly</option>
+                <option value="half-yearly">Half-Yearly</option>
+                <option value="yearly">Yearly</option>
+                <option value="2 years">2 Years</option>
+                <option value="3 years">3 Years</option>
+              </select>
+            </div>
           <div className="space-y-2">
             <Label htmlFor="status">Status</Label>
             <div className="flex items-center space-x-2 pt-2">
@@ -419,27 +425,16 @@ export default function SaaSPackages() {
                   </div>
 
                   <div className="flex items-center space-x-2 pt-4">
-                    <Dialog>
-                      <DialogTrigger asChild>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => setEditingPackage(pkg)}
-                        >
-                          <Edit className="h-4 w-4" />
-                        </Button>
-                      </DialogTrigger>
-                      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-                        <DialogHeader>
-                          <DialogTitle>Edit Package</DialogTitle>
-                        </DialogHeader>
-                        <PackageForm
-                          package={editingPackage}
-                          onSubmit={(data: any) => updatePackageMutation.mutate({ id: editingPackage.id, ...data })}
-                          onCancel={() => setEditingPackage(null)}
-                        />
-                      </DialogContent>
-                    </Dialog>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setEditingPackage(pkg);
+                          setEditingPackageId(pkg.id);
+                        }}
+                      >
+                        <Edit className="h-4 w-4" />
+                      </Button>
                     <Button
                       size="sm"
                       variant="destructive"
@@ -461,6 +456,44 @@ export default function SaaSPackages() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog
+        open={Boolean(editingPackage)}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditingPackage(null);
+            setEditingPackageId(null);
+          }
+        }}
+      >
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Edit Package</DialogTitle>
+          </DialogHeader>
+        {editingPackage && (
+          <PackageForm
+            key={editingPackage.id}
+            package={editingPackage}
+            onSubmit={(data: any) => {
+              const packageId = editingPackage?.id ?? editingPackageId;
+              if (!packageId) {
+                toast({
+                  title: "Error",
+                  description: "Unable to determine package to update",
+                  variant: "destructive",
+                });
+                return;
+              }
+              updatePackageMutation.mutate({ id: packageId, ...data });
+            }}
+            onCancel={() => {
+              setEditingPackage(null);
+              setEditingPackageId(null);
+            }}
+          />
+        )}
+        </DialogContent>
+      </Dialog>
 
       {/* Success Modal */}
       <Dialog open={showSuccessModal} onOpenChange={setShowSuccessModal}>

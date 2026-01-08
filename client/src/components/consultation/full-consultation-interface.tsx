@@ -1245,6 +1245,8 @@ ${
   const [showPhysicalExamModal, setShowPhysicalExamModal] = useState(false);
   const [showViewAnatomicalDialog, setShowViewAnatomicalDialog] = useState(false);
   const [savedAnatomicalImage, setSavedAnatomicalImage] = useState<string | null>(null);
+  const [showPdfSavedModal, setShowPdfSavedModal] = useState(false);
+  const [savedPdfFilename, setSavedPdfFilename] = useState("");
 
   // Anatomical analysis state
   const [selectedMuscleGroup, setSelectedMuscleGroup] = useState<string>("");
@@ -4404,6 +4406,11 @@ ${
                             const imageFilename = result.filename || `${currentPatientId}.png`;
                             imagePathToUse = `/uploads/anatomical_analysis_img/${organizationId}/${currentPatientId}/${imageFilename}`;
                             setSavedAnatomicalImage(imagePathToUse);
+                            window.dispatchEvent(
+                              new CustomEvent("anatomicalFilesUpdated", {
+                                detail: { patientId: currentPatientId },
+                              }),
+                            );
                           } catch (saveError) {
                             console.error('Error auto-saving image:', saveError);
                             toast({
@@ -5214,10 +5221,46 @@ ${
                         }
 
                         // Save PDF
-                        const pdfFilename = `Anatomical_Analysis_Patient_${currentPatientId}_${new Date().toISOString().split('T')[0]}.pdf`;
-                        console.log('[ANATOMICAL PDF STEP3] Saving PDF:', pdfFilename);
-                        doc.save(pdfFilename);
-                        console.log('[ANATOMICAL PDF STEP3] PDF saved successfully');
+                          const pdfFilename = `Anatomical_Analysis_Patient_${currentPatientId}_${new Date().toISOString().split('T')[0]}.pdf`;
+                          console.log('[ANATOMICAL PDF STEP3] Saving PDF:', pdfFilename);
+
+                          const pdfDataUri = doc.output("datauristring");
+                          try {
+                            const token = localStorage.getItem('auth_token');
+                            const savePdfResponse = await fetch('/api/anatomical-analysis/save-pdf', {
+                              method: 'POST',
+                              headers: {
+                                'Authorization': `Bearer ${token}`,
+                                'X-Tenant-Subdomain': getTenantSubdomain(),
+                                'Content-Type': 'application/json',
+                              },
+                              body: JSON.stringify({
+                                patientId: currentPatientId,
+                                pdfData: pdfDataUri,
+                                filename: pdfFilename,
+                              }),
+                              credentials: 'include',
+                            });
+
+                            if (savePdfResponse.ok) {
+                              const savedPdfResult = await savePdfResponse.json();
+                              const finalFilename = savedPdfResult.filename || pdfFilename;
+                              setSavedPdfFilename(finalFilename);
+                              setShowPdfSavedModal(true);
+                              window.dispatchEvent(
+                                new CustomEvent("anatomicalFilesUpdated", {
+                                  detail: { patientId: currentPatientId },
+                                }),
+                              );
+                            } else {
+                              console.error("[ANATOMICAL PDF STEP3] Failed to save PDF:", await savePdfResponse.text());
+                            }
+                          } catch (savePdfError) {
+                            console.error("[ANATOMICAL PDF STEP3] Failed to save PDF to server:", savePdfError);
+                          }
+
+                          doc.save(pdfFilename);
+                          console.log('[ANATOMICAL PDF STEP3] PDF saved successfully');
 
                         toast({
                           title: "PDF Generated",
@@ -5650,6 +5693,25 @@ ${
                 Close
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={showPdfSavedModal} onOpenChange={setShowPdfSavedModal}>
+        <DialogContent className="max-w-sm text-center space-y-4">
+          <DialogHeader>
+            <DialogTitle className="flex flex-col items-center gap-2 text-xl font-semibold">
+              <CheckCircle className="h-10 w-10 text-green-500" />
+              File Saved
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-gray-700">
+            {savedPdfFilename
+              ? `${savedPdfFilename} has been saved to anatomical analysis uploads.`
+              : "The anatomical analysis PDF has been saved."}
+          </p>
+          <div className="flex justify-center">
+            <Button onClick={() => setShowPdfSavedModal(false)}>OK</Button>
           </div>
         </DialogContent>
       </Dialog>

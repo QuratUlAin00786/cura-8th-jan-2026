@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { ChangeEvent, useState, useEffect, useMemo } from "react";
 import { format } from "date-fns";
 import { useQuery, useMutation } from "@tanstack/react-query";
 import { queryClient, apiRequest } from "@/lib/queryClient";
@@ -118,6 +118,42 @@ interface FormSummary {
   updatedAt: string;
   sections: FormSectionSummary[];
 }
+
+const ALLOWED_CLINIC_LOGO_TYPES = ["image/png", "image/jpeg", "image/jpg", "image/svg+xml"];
+const ALLOWED_CLINIC_LOGO_EXTENSIONS = ["png", "jpg", "jpeg", "svg"];
+const CLINIC_LOGO_MAX_SIZE_BYTES = 2 * 1024 * 1024;
+const CLINIC_LOGO_MIN_DIMENSION = 200;
+const CLINIC_LOGO_MAX_DIMENSION = 2000;
+
+const getFileExtension = (filename: string) => filename.split(".").pop()?.toLowerCase();
+
+const validateClinicLogoMetadata = (file: File): string | null => {
+  const fileType = file.type?.toLowerCase() ?? "";
+  if (
+    !ALLOWED_CLINIC_LOGO_TYPES.includes(fileType) &&
+    !ALLOWED_CLINIC_LOGO_EXTENSIONS.includes(getFileExtension(file.name) ?? "")
+  ) {
+    return "Logo must be PNG, JPG/JPEG, or SVG format.";
+  }
+  if (file.size > CLINIC_LOGO_MAX_SIZE_BYTES) {
+    return "Logo must be smaller than 2 MB.";
+  }
+  return null;
+};
+
+const validateClinicLogoDimensions = (width: number, height: number): string | null => {
+  if (width < CLINIC_LOGO_MIN_DIMENSION || height < CLINIC_LOGO_MIN_DIMENSION) {
+    return `Logo must be at least ${CLINIC_LOGO_MIN_DIMENSION}×${CLINIC_LOGO_MIN_DIMENSION} pixels.`;
+  }
+  if (width > CLINIC_LOGO_MAX_DIMENSION || height > CLINIC_LOGO_MAX_DIMENSION) {
+    return `Logo must not exceed ${CLINIC_LOGO_MAX_DIMENSION}×${CLINIC_LOGO_MAX_DIMENSION} pixels.`;
+  }
+  const ratio = width / height;
+  if (Math.abs(ratio - 1) > 0.01) {
+    return "Logo must maintain a 1:1 aspect ratio (square).";
+  }
+  return null;
+};
 
 interface FormResponseAnswer {
   fieldId: number;
@@ -950,6 +986,8 @@ export default function Forms() {
   const [showViewClinicInfoDialog, setShowViewClinicInfoDialog] = useState(false);
   const [clinicLogoFile, setClinicLogoFile] = useState<File | null>(null);
   const [clinicLogoPreview, setClinicLogoPreview] = useState<string>("");
+  const [clinicLogoError, setClinicLogoError] = useState<string>("");
+  const [clinicLogoSuccess, setClinicLogoSuccess] = useState<string>("");
   const [selectedLogoPosition, setSelectedLogoPosition] = useState<"left" | "right" | "center">("center");
   const [activeClinicTab, setActiveClinicTab] = useState<string>("header");
   const [clinicHeaderInfo, setClinicHeaderInfo] = useState({
@@ -974,6 +1012,59 @@ export default function Forms() {
     twitter: "",
     linkedin: "",
   });
+
+  const handleClinicLogoChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const input = event.target;
+    const file = input.files?.[0] ?? null;
+
+    if (!file) {
+      setClinicLogoFile(null);
+      setClinicLogoPreview("");
+      setClinicLogoError("");
+      setClinicLogoSuccess("");
+      return;
+    }
+
+    const metadataError = validateClinicLogoMetadata(file);
+    if (metadataError) {
+      setClinicLogoFile(null);
+      setClinicLogoPreview("");
+      setClinicLogoError(metadataError);
+      setClinicLogoSuccess("");
+      input.value = "";
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const dataUrl = reader.result as string;
+      const img = document.createElement("img");
+      img.onload = () => {
+        const dimensionError = validateClinicLogoDimensions(img.width, img.height);
+        if (dimensionError) {
+          setClinicLogoFile(null);
+          setClinicLogoPreview("");
+          setClinicLogoError(dimensionError);
+          setClinicLogoSuccess("");
+          input.value = "";
+          return;
+        }
+
+        setClinicLogoError("");
+        setClinicLogoPreview(dataUrl);
+        setClinicLogoFile(file);
+        setClinicLogoSuccess("Logo uploaded successfully.");
+      };
+      img.onerror = () => {
+        setClinicLogoFile(null);
+        setClinicLogoPreview("");
+        setClinicLogoError("Unable to read logo dimensions. Please try another image.");
+        input.value = "";
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  };
 
   // Patient letter templates data
   const patientTemplates = {
@@ -6159,7 +6250,7 @@ const formIds = useMemo(
                             size="sm"
                             className="px-3 py-1 rounded-md bg-gray-200 text-black shadow-sm border border-transparent hover:bg-gray-300"
                             onClick={() => openFormShareDialog(form)}
-                            disabled={patientsLoading || !patientsFromTable.length}
+                            disabled={patientsLoading}
                           >
                             Share
                           </Button>
@@ -12369,21 +12460,39 @@ Registration No: [Number]`
                     <Input
                       type="file"
                       accept="image/*"
-                      onChange={(e) => {
-                        const file = e.target.files?.[0];
-                        if (file) {
-                          setClinicLogoFile(file);
-                          const reader = new FileReader();
-                          reader.onloadend = () => {
-                            setClinicLogoPreview(reader.result as string);
-                          };
-                          reader.readAsDataURL(file);
-                        }
-                      }}
-                      className="flex-1"
+                      onChange={handleClinicLogoChange}
+                      className={`flex-1 ${clinicLogoError ? "border border-destructive text-destructive" : ""}`}
                       data-testid="input-clinic-logo"
+                      aria-invalid={Boolean(clinicLogoError)}
                     />
                   </div>
+                  <div className="text-xs text-gray-500 space-y-1">
+                    <p className="font-semibold text-gray-700 dark:text-gray-200">Recommended logo specs</p>
+                    <ul className="list-disc pl-4 space-y-1">
+                      <li>Dimensions: minimum 200×200, maximum 2000×2000 (square, 1:1 ratio strongly recommended).</li>
+                      <li>File size: keep under 1–2&nbsp;MB when possible.</li>
+                      <li>Formats: PNG or SVG preferred (transparent background), JPG/JPEG acceptable.</li>
+                      <li>Use a high-resolution version—systems usually resize down, but low-res assets may look blurry.</li>
+                    </ul>
+                  </div>
+                  {clinicLogoSuccess && !clinicLogoError && (
+                    <div
+                      className="rounded-md border border-green-200 bg-green-50 px-3 py-1 mt-1 text-xs font-medium text-green-700 dark:border-green-500/40 dark:bg-green-500/10 dark:text-green-200"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      {clinicLogoSuccess}
+                    </div>
+                  )}
+                  {clinicLogoError && (
+                    <div
+                      className="rounded-md border border-red-200 bg-red-50 px-3 py-1 mt-1 text-xs font-medium text-red-700 dark:border-red-500/40 dark:bg-red-500/10 dark:text-red-200"
+                      role="alert"
+                      aria-live="assertive"
+                    >
+                      {clinicLogoError}
+                    </div>
+                  )}
                   
                   {/* Logo Preview Section */}
                   <div className="border rounded-lg p-4 bg-gray-50 dark:bg-gray-800 min-h-[120px] flex items-center justify-center">
@@ -12893,6 +13002,8 @@ Registration No: [Number]`
                 setShowCreateClinicInfoDialog(false);
                 setClinicLogoFile(null);
                 setClinicLogoPreview("");
+                  setClinicLogoError("");
+                  setClinicLogoSuccess("");
                 setSelectedLogoPosition("center");
                 setActiveClinicTab("header");
               }}
@@ -12903,7 +13014,17 @@ Registration No: [Number]`
             <div className="flex gap-3">
               {activeClinicTab === "header" && (
                 <Button
+                  disabled={Boolean(clinicLogoError)}
                   onClick={async () => {
+                    if (clinicLogoError) {
+                      toast({
+                        title: "⚠️ Logo validation failed",
+                        description: clinicLogoError,
+                        variant: "destructive",
+                        duration: 3000,
+                      });
+                      return;
+                    }
                     if (!clinicHeaderInfo.clinicName.trim()) {
                       toast({
                         title: "⚠️ Validation Error",

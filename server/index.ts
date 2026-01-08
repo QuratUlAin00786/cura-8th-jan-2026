@@ -6,6 +6,7 @@ import { registerSaaSRoutes } from "./saas-routes";
 import { setupVite, serveStatic, log } from "./vite";
 import { seedDatabase } from "./seed-data";
 import { smsScheduler } from "./services/sms-scheduler";
+import { startSubscriptionReminderScheduler } from "./services/subscription-reminders";
 
 console.log("🔐 ENVIRONMENT CHECK:");
 console.log("  - FILE_SECRET exists:", !!process.env.FILE_SECRET);
@@ -96,6 +97,8 @@ app.use((req, res, next) => {
     // Start the SMS scheduler for automatic scheduled message sending
     smsScheduler.start();
     log("📱 SMS Scheduler started - checking for scheduled messages every 30 seconds");
+    startSubscriptionReminderScheduler();
+    log("⏰ Subscription reminder scheduler started (hourly)");
   });
 
   // Run database seeding in background AFTER server is listening

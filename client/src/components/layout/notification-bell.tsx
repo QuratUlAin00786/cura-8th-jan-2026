@@ -64,8 +64,14 @@ export function NotificationBell() {
   const { user } = useAuth();
 
   // Fetch unread count
+  const organizationKey = user?.organizationId ?? getActiveSubdomain();
+  const isAdminUser = Boolean(user?.role?.toString().toLowerCase() === "admin");
+  const notificationsQueryKey = ["/api/notifications", organizationKey];
+  const totalCountQueryKey = ["/api/notifications/count", organizationKey];
+  const unreadCountQueryKey = ["/api/notifications/unread-count", organizationKey];
+
   const { data: unreadCountData } = useQuery({
-    queryKey: ["/api/notifications/unread-count"],
+    queryKey: unreadCountQueryKey,
     queryFn: async () => {
       const response = await apiRequest("GET", "/api/notifications/unread-count");
       if (!response.ok) {
@@ -79,7 +85,7 @@ export function NotificationBell() {
   const unreadCount = (unreadCountData as { count: number })?.count || 0;
 
   const { data: totalNotificationsData } = useQuery({
-    queryKey: ["/api/notifications/count"],
+    queryKey: totalCountQueryKey,
     queryFn: async () => {
       const response = await apiRequest("GET", "/api/notifications/count");
       if (!response.ok) {
@@ -93,8 +99,8 @@ export function NotificationBell() {
 
   // Fetch notifications
   const { data: notifications = [], isLoading } = useQuery<Notification[]>({
-    queryKey: ["/api/notifications"],
-    enabled: user?.role === "admin" ? true : isOpen,
+    queryKey: notificationsQueryKey,
+    enabled: isAdminUser ? true : isOpen,
   });
 
   const totalNotifications = (totalNotificationsData as { count: number })?.count || notifications.length;
@@ -109,8 +115,8 @@ export function NotificationBell() {
       return apiRequest("PATCH", `/api/notifications/${notificationId}/read`);
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/notifications/unread-count"] });
+      queryClient.invalidateQueries({ queryKey: notificationsQueryKey });
+      queryClient.invalidateQueries({ queryKey: unreadCountQueryKey });
     },
   });
 
@@ -120,10 +126,10 @@ export function NotificationBell() {
       return apiRequest("PATCH", `/api/notifications/${notificationId}/dismiss`);
     },
     onSuccess: (_data, notificationId) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/notifications/unread-count"] });
+      queryClient.invalidateQueries({ queryKey: notificationsQueryKey });
+      queryClient.invalidateQueries({ queryKey: unreadCountQueryKey });
       queryClient.setQueryData<Notification[]>(
-        ["/api/notifications"],
+        notificationsQueryKey,
         (prev) => prev?.filter((n) => n.id !== notificationId) ?? prev,
       );
       toast({
@@ -139,8 +145,8 @@ export function NotificationBell() {
       return apiRequest("PATCH", "/api/notifications/mark-all-read");
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/notifications"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/notifications/unread-count"] });
+      queryClient.invalidateQueries({ queryKey: notificationsQueryKey });
+      queryClient.invalidateQueries({ queryKey: unreadCountQueryKey });
       toast({
         title: "All notifications marked as read",
         description: "All notifications have been marked as read.",

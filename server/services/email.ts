@@ -1388,8 +1388,14 @@ Company Registration: 16556912
   }
 
   generatePasswordResetEmail(userFirstName: string, resetToken: string): EmailTemplate {
-    const baseUrl = process.env.REPLIT_DEV_DOMAIN || 'your-domain.com';
-    const resetUrl = `https://${baseUrl}/auth/reset-password?token=${resetToken}`;
+    const rawBaseUrl = process.env.VITE_API_URL || process.env.REPLIT_DEV_DOMAIN;
+    const normalizedBaseUrl = rawBaseUrl
+      ? rawBaseUrl.replace(/\/+$/, "")
+      : "https://your-domain.com";
+    const baseUrl = normalizedBaseUrl.startsWith("http")
+      ? normalizedBaseUrl
+      : `https://${normalizedBaseUrl}`;
+    const resetUrl = `${baseUrl}/auth/reset-password?token=${resetToken}`;
     const subject = 'Password Reset Request - Cura EMR';
     
     const html = `

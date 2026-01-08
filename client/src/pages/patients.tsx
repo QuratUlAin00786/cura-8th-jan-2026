@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useParams, useLocation } from "wouter";
 import { Header } from "@/components/layout/header";
 import { PatientList } from "@/components/patients/patient-list";
@@ -21,7 +21,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { UserPlus, ArrowLeft, FileText, Calendar, User, X, LayoutGrid, List } from "lucide-react";
+import { UserPlus, ArrowLeft, FileText, Calendar, User, X, LayoutGrid, List, Mail } from "lucide-react";
 
 // Helper function to get the correct tenant subdomain
 function getTenantSubdomain(): string {
@@ -69,6 +69,12 @@ export default function Patients() {
   // State for patient data
   const [patient, setPatient] = useState<any>(null);
   const [patientLoading, setPatientLoading] = useState(false);
+  const [anatomicalFiles, setAnatomicalFiles] = useState<
+    Array<{ filename: string; url: string; uploadedAt: string; size: number }>
+  >([]);
+  const [anatomicalFilesLoading, setAnatomicalFilesLoading] = useState(false);
+  const [anatomicalFilesError, setAnatomicalFilesError] = useState("");
+  const [deletingFile, setDeletingFile] = useState<string | null>(null);
   
   // State for gender filter ("all" shows both, "Male" shows males, "Female" shows females)
   const [genderFilter, setGenderFilter] = useState<"all" | "Male" | "Female">("all");
@@ -128,6 +134,97 @@ export default function Patients() {
       setSelectedPatient(patient);
     }
   }, [patient]);
+
+  const fetchAnatomicalFiles = useCallback(async () => {
+    if (!patientId) {
+      setAnatomicalFiles([]);
+      return;
+    }
+
+    setAnatomicalFilesLoading(true);
+    setAnatomicalFilesError("");
+
+    try {
+      const token = localStorage.getItem("auth_token");
+      const headers: Record<string, string> = {
+        "X-Tenant-Subdomain": getTenantSubdomain(),
+      };
+
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+
+      const response = await fetch(`/api/anatomical-analysis/files/${patientId}`, {
+        headers,
+        credentials: "include",
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      setAnatomicalFiles(data.files ?? []);
+    } catch (error) {
+      console.error("Error fetching anatomical analysis files:", error);
+      setAnatomicalFiles([]);
+      setAnatomicalFilesError("Failed to load anatomical analysis files.");
+    } finally {
+      setAnatomicalFilesLoading(false);
+    }
+  }, [patientId]);
+
+  useEffect(() => {
+    fetchAnatomicalFiles();
+  }, [fetchAnatomicalFiles]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const customEvent = event as CustomEvent<{ patientId?: number }>;
+      const detailPatientId = customEvent.detail?.patientId;
+      if (detailPatientId && patientId === detailPatientId) {
+        fetchAnatomicalFiles();
+      }
+    };
+    window.addEventListener("anatomicalFilesUpdated", handler);
+    return () => {
+      window.removeEventListener("anatomicalFilesUpdated", handler);
+    };
+  }, [fetchAnatomicalFiles, patientId]);
+
+  const deleteAnatomicalFile = useCallback(
+    async (filename: string) => {
+      if (!patientId) return false;
+      setDeletingFile(filename);
+      try {
+        const token = localStorage.getItem("auth_token");
+        const headers: Record<string, string> = {
+          "X-Tenant-Subdomain": getTenantSubdomain(),
+          "Content-Type": "application/json",
+        };
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        }
+        const response = await fetch(`/api/anatomical-analysis/files/${patientId}`, {
+          method: "DELETE",
+          headers,
+          credentials: "include",
+          body: JSON.stringify({ filename }),
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        await fetchAnatomicalFiles();
+        return true;
+      } catch (error) {
+        console.error("Error deleting anatomical file:", error);
+        return false;
+      } finally {
+        setDeletingFile(null);
+      }
+    },
+    [patientId, fetchAnatomicalFiles],
+  );
 
   // Function to handle flag deletion
   const handleFlagDelete = async (flagIndex: number) => {
@@ -228,7 +325,10 @@ export default function Patients() {
                 <div>
                   <p className="text-sm font-medium text-gray-700 dark:text-white">Contact Information</p>
                   <p className="text-sm text-gray-600 dark:text-neutral-300">{patient.phone}</p>
-                  <p className="text-sm text-gray-600 dark:text-neutral-300">{patient.email}</p>
+                  <div className="flex items-center gap-1 text-sm text-gray-600 dark:text-neutral-300">
+                    <Mail className="h-4 w-4 text-gray-500 dark:text-neutral-400" />
+                    <span>{patient.email}</span>
+                  </div>
                 </div>
                 <div>
                   <p className="text-sm font-medium text-gray-700 dark:text-white">Address</p>
@@ -346,7 +446,11 @@ export default function Patients() {
                 const updatedPatient = { ...patient, ...updates };
                 setPatient(updatedPatient);
                 setSelectedPatient(updatedPatient);
-              }} 
+              }}
+              anatomicalFiles={anatomicalFiles}
+              anatomicalFilesLoading={anatomicalFilesLoading}
+              anatomicalFilesError={anatomicalFilesError}
+              onDeleteAnatomicalFile={deleteAnatomicalFile}
             />
           </div>
         </div>

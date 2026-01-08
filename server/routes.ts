@@ -12764,7 +12764,7 @@ This treatment plan should be reviewed and adjusted based on individual patient 
       const limit = Number.isNaN(limitParam) ? 20 : limitParam;
 
       let notifications;
-      if (req.user!.role === "admin" && limit <= 0) {
+      if (req.user!.role === "admin") {
         notifications = await storage.getNotificationsByOrganization(organizationId, limit);
       } else {
         const safeLimit = limit <= 0 ? 20 : limit;
@@ -15074,6 +15074,133 @@ This treatment plan should be reviewed and adjusted based on individual patient 
     } catch (error) {
       console.error("Error saving anatomical analysis image:", error);
       handleRouteError(error, "save anatomical analysis image", res);
+    }
+  });
+
+  app.post("/api/anatomical-analysis/save-pdf", authMiddleware, async (req: TenantRequest, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "User not authenticated" });
+      }
+
+      const payload = z.object({
+        patientId: z.number(),
+        pdfData: z.string(),
+        filename: z.string().optional(),
+      }).parse(req.body);
+
+      const organizationId = req.tenant!.id;
+      const patientId = payload.patientId;
+      const baseDir = path.join("./uploads", "anatomical_analysis_img", organizationId.toString(), patientId.toString());
+
+      if (!await fs.promises.access(baseDir).then(() => true).catch(() => false)) {
+        await fs.promises.mkdir(baseDir, { recursive: true });
+      }
+
+      const timestamp = Date.now();
+      const finalFilename = payload.filename || `${patientId}_${timestamp}.pdf`;
+      const pdfPath = path.join(baseDir, finalFilename);
+      const normalizedData = payload.pdfData.replace(/^data:application\/pdf;base64,/, "");
+      const pdfBuffer = Buffer.from(normalizedData, "base64");
+
+      await fs.promises.writeFile(pdfPath, pdfBuffer);
+
+      console.log(`💾 Saved anatomical analysis PDF for patient ${patientId}: ${pdfPath}`);
+
+      res.json({
+        message: "Anatomical analysis PDF saved successfully",
+        filename: finalFilename,
+        path: pdfPath,
+        url: `/uploads/anatomical_analysis_img/${organizationId}/${patientId}/${encodeURIComponent(finalFilename)}`,
+        action: "created",
+      });
+    } catch (error) {
+      console.error("Error saving anatomical analysis PDF:", error);
+      handleRouteError(error, "save anatomical analysis PDF", res);
+    }
+  });
+
+  app.get("/api/anatomical-analysis/files/:patientId", authMiddleware, async (req: TenantRequest, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "User not authenticated" });
+      }
+
+      const patientId = parseInt(req.params.patientId);
+      if (isNaN(patientId)) {
+        return res.status(400).json({ error: "Invalid patient ID" });
+      }
+
+      const organizationId = req.tenant!.id;
+      const baseDir = path.join("./uploads", "anatomical_analysis_img", organizationId.toString(), patientId.toString());
+      const dirExists = await fs.promises.access(baseDir).then(() => true).catch(() => false);
+
+      if (!dirExists) {
+        return res.json({ files: [] });
+      }
+
+      const filenames = await fs.promises.readdir(baseDir);
+      const fileDetails = await Promise.all(
+        filenames.map(async (filename) => {
+          const filePath = path.join(baseDir, filename);
+          const stat = await fs.promises.stat(filePath);
+          return {
+            filename,
+            uploadedAt: stat.mtime.toISOString(),
+            size: stat.size,
+            url: `/uploads/anatomical_analysis_img/${organizationId}/${patientId}/${encodeURIComponent(filename)}`,
+          };
+        }),
+      );
+
+      fileDetails.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+
+      res.json({ files: fileDetails });
+    } catch (error) {
+      console.error("Error listing anatomical analysis files:", error);
+      handleRouteError(error, "list anatomical analysis files", res);
+    }
+  });
+
+  app.delete("/api/anatomical-analysis/files/:patientId", authMiddleware, async (req: TenantRequest, res) => {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ error: "User not authenticated" });
+      }
+
+      const patientId = parseInt(req.params.patientId);
+      if (isNaN(patientId)) {
+        return res.status(400).json({ error: "Invalid patient ID" });
+      }
+
+      const payload = z
+        .object({
+          filename: z.string(),
+        })
+        .parse(req.body);
+
+      const organizationId = req.tenant!.id;
+      const baseDir = path.join("./uploads", "anatomical_analysis_img", organizationId.toString(), patientId.toString());
+      const targetPath = path.join(baseDir, payload.filename);
+
+      if (!targetPath.startsWith(baseDir)) {
+        return res.status(400).json({ error: "Invalid filename" });
+      }
+
+      const fileExists = await fs.promises
+        .access(targetPath)
+        .then(() => true)
+        .catch(() => false);
+
+      if (!fileExists) {
+        return res.status(404).json({ error: "File not found" });
+      }
+
+      await fs.promises.unlink(targetPath);
+      res.json({ message: "File deleted successfully", filename: payload.filename });
+    } catch (error) {
+      console.error("Error deleting anatomical file:", error);
+      handleRouteError(error, "delete anatomical file", res);
     }
   });
 

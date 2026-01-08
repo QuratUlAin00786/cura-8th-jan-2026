@@ -1937,7 +1937,13 @@ Medical License: [License Number]
                       {selectedAppointment.providerSpecialty || selectedAppointment.specialty || "General"}
                     </p>
                     <p className="text-xs text-gray-500 dark:text-gray-400">
-                      Created By: {selectedAppointment.createdByName || `${getPatientName(selectedAppointment.createdBy)} (patient)` || "N/A"}
+                      Created By: {(() => {
+                        const creator = getCreatedByUser(selectedAppointment.createdBy);
+                        if (creator) {
+                          return `${creator.name} (${creator.role})`;
+                        }
+                        return selectedAppointment.createdByName || `${getPatientName(selectedAppointment.createdBy)} (patient)` || "N/A";
+                      })()}
                     </p>
                   </div>
                 </div>
