@@ -15561,6 +15561,29 @@ This treatment plan should be reviewed and adjusted based on individual patient 
     stripeWebhookHandler,
   );
 
+  app.post("/api/stripe/replay-invoice", requireRole(["admin"]), express.json(), async (req: TenantRequest, res) => {
+    if (!stripe) {
+      return res.status(500).json({ error: "Stripe is not configured" });
+    }
+
+    const payload = z
+      .object({
+        invoiceId: z.string().min(1),
+      })
+      .parse(req.body);
+
+    try {
+      const invoice = await stripe.invoices.retrieve(payload.invoiceId, {
+        expand: ["subscription", "checkout_session"],
+      });
+      await handleInvoiceSuccess(invoice);
+      res.json({ success: true, invoiceId: invoice.id });
+    } catch (error: any) {
+      console.error("Replay invoice failed:", error);
+      res.status(500).json({ error: error.message || "Failed to replay invoice" });
+    }
+  });
+
   // PayPal Routes - Real PayPal Integration (conditional on credentials)
   app.get("/api/paypal/setup", async (req, res) => {
     try {
